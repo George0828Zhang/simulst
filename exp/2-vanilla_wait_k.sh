@@ -23,10 +23,10 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --tensorboard-logdir logdir/${TASK} \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \
-    --save-interval-updates 30 \
+    --save-interval-updates 200 \
     --keep-interval-updates 5 \
     --patience 50 \
     --log-format simple --log-interval 10 \
-    --num-workers 8 \
+    --num-workers 4 \
     --fp16 \
     --seed 66
