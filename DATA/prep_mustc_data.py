@@ -113,8 +113,9 @@ class TextProcessor:
             pre_replace_unicode_punct=True, 
             post_remove_control_chars=True
         )
-        self.src_tok = MosesTokenizer(lang='en')
-        self.src_rem = []
+        # self.src_tok = MosesTokenizer(lang='en')
+        self.punc_trans = str.maketrans(string.punctuation, ' '*len(string.punctuation)) #map punctuation to space
+        self.src_punc = lambda x: x.translate(self.punc_trans)
 
         self.tgt_norm = MosesPunctNormalizer(
             lang=tgt_lang, 
@@ -124,19 +125,19 @@ class TextProcessor:
             pre_replace_unicode_punct=True, 
             post_remove_control_chars=True
         )
-        self.tgt_tok = MosesTokenizer(lang=tgt_lang)
+        # self.tgt_tok = MosesTokenizer(lang=tgt_lang)
 
     def __call__(self, src, tgt):
         # preprocess english
         src = self.src_norm.normalize(src)
-        src = src.lower().translate(str.maketrans('', '', string.punctuation))
-        src = self.src_tok.tokenize(src, escape=False)
-        src = " ".join(src)
+        src = self.src_punc(src.lower())
+        # src = self.src_tok.tokenize(src, escape=False)
+        # src = " ".join(src)
 
         # preprocess target
         tgt = self.tgt_norm.normalize(tgt)
-        tgt = self.tgt_tok.tokenize(tgt, escape=False)
-        tgt = " ".join(tgt)
+        # tgt = self.tgt_tok.tokenize(tgt, escape=False)
+        # tgt = " ".join(tgt)
         return src, tgt
 
 
@@ -149,37 +150,39 @@ def process(args):
             continue
         # Extract features
         feature_root = cur_root / "fbank80"
-        feature_root.mkdir(exist_ok=True)
-        for split in MUSTC.SPLITS:
-            print(f"Fetching split {split}...")
-            dataset = MUSTC(root.as_posix(), lang, split)
-            print("Extracting log mel filter bank features...")
-            if split == 'train' and args.cmvn_type == "global":
-                print("And estimating cepstral mean and variance stats...")
-                gcmvn_feature_list = []
+        if not args.manifest_only:
+            feature_root.mkdir(exist_ok=True)
+            for split in MUSTC.SPLITS:
+                print(f"Fetching split {split}...")
+                dataset = MUSTC(root.as_posix(), lang, split)
+                print("Extracting log mel filter bank features...")
+                if split == 'train' and args.cmvn_type == "global":
+                    print("And estimating cepstral mean and variance stats...")
+                    gcmvn_feature_list = []
 
-            for waveform, sample_rate, _, _, _, utt_id in tqdm(dataset):
-                features = extract_fbank_features(waveform, sample_rate)
+                for waveform, sample_rate, _, _, _, utt_id in tqdm(dataset):
+                    features = extract_fbank_features(waveform, sample_rate)
 
-                np.save(
-                    (feature_root / f"{utt_id}.npy").as_posix(),
-                    features
-                )
+                    np.save(
+                        (feature_root / f"{utt_id}.npy").as_posix(),
+                        features
+                    )
+
+                    if split == 'train' and args.cmvn_type == "global":
+                        if len(gcmvn_feature_list) < args.gcmvn_max_num:
+                            gcmvn_feature_list.append(features)
 
                 if split == 'train' and args.cmvn_type == "global":
-                    if len(gcmvn_feature_list) < args.gcmvn_max_num:
-                        gcmvn_feature_list.append(features)
-
-            if split == 'train' and args.cmvn_type == "global":
-                # Estimate and save cmv
-                stats = cal_gcmvn_stats(gcmvn_feature_list)
-                with open(cur_root / "gcmvn.npz", "wb") as f:
-                    np.savez(f, mean=stats["mean"], std=stats["std"])
+                    # Estimate and save cmv
+                    stats = cal_gcmvn_stats(gcmvn_feature_list)
+                    with open(cur_root / "gcmvn.npz", "wb") as f:
+                        np.savez(f, mean=stats["mean"], std=stats["std"])
 
         # Pack features into ZIP
         zip_path = cur_root / "fbank80.zip"
-        print("ZIPing features...")
-        create_zip(feature_root, zip_path)
+        if not args.manifest_only:
+            print("ZIPing features...")
+            create_zip(feature_root, zip_path)
         print("Fetching ZIP manifest...")
         zip_manifest = get_zip_manifest(zip_path)
         # Generate TSV manifest
@@ -228,6 +231,13 @@ def process(args):
                 cur_root / "gcmvn.npz" if args.cmvn_type == "global"
                 else None
             ),
+            pre_tokenizer={
+                "tokenizer": "moses",
+                "source_lang": "en",
+                "target_lang": lang,
+                "moses_no_dash_splits": False,
+                "moses_no_escape": True
+            }
         )
         # Clean up
         shutil.rmtree(feature_root)
@@ -295,6 +305,8 @@ def main():
                             "Maximum number of sentences to use to estimate"
                             "global mean and variance"
                             ))
+    parser.add_argument("--manifest-only", action="store_true", help="only preprocess manifest. "
+                        "works only when zip is already present")
     args = parser.parse_args()
 
     args.langs = args.langs.split(',')
