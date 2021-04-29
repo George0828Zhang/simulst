@@ -5,10 +5,11 @@ TASK=offline_asr
 export CUDA_VISIBLE_DEVICES=0
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --config-yaml config_st.yaml --train-subset train_asr --valid-subset dev_asr \
+    --config-yaml config_asr.yaml --train-subset train_asr --valid-subset dev_asr \
     --max-tokens 40000 \
     --update-freq 8 \
-    --task speech_to_text  \
+    --task speech_to_text_infer  \
+    --inference-config-yaml infer_asr.yaml \
     --arch convtransformer_espnet  \
     --criterion label_smoothed_cross_entropy --label-smoothing 0.1 --report-accuracy \
     --weight-decay 0.0001 \

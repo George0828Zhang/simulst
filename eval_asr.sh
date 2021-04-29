@@ -2,7 +2,7 @@
 TASK=offline_asr
 SPLIT=dev #tst-COMMON
 . exp/data_path.sh
-CONF=$DATA/config_st.yaml
+CONF=$DATA/config_asr.yaml
 CHECKDIR=$(pwd)/exp/checkpoints/${TASK}
 AVG=true
 
