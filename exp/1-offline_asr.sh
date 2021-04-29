@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
-TASK=wait_9
+TASK=offline_asr
 . ./data_path.sh
-ASR_MODEL=./checkpoints/offline_asr/avg_best_5_checkpoint.pt
 
 export CUDA_VISIBLE_DEVICES=0
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --load-pretrained-encoder-from ${ASR_MODEL} \
-    --config-yaml config_st.yaml --train-subset train_st --valid-subset dev_st \
+    --config-yaml config_st.yaml --train-subset train_asr --valid-subset dev_asr \
     --max-tokens 40000 \
     --update-freq 8 \
     --task speech_to_text  \
-    --arch convtransformer_simul_trans_espnet  \
-    --simul-type waitk_fixed_pre_decision  \
-    --waitk-lagging 3 \
-    --fixed-pre-decision-ratio 7 \
-    --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
+    --arch convtransformer_espnet  \
+    --criterion label_smoothed_cross_entropy --label-smoothing 0.1 --report-accuracy \
     --weight-decay 0.0001 \
     --dropout 0.1 \
     --clip-norm 10.0 \
-    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
+    --optimizer adam --lr 5e-4 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 100000 \
     --tensorboard-logdir logdir/${TASK} \

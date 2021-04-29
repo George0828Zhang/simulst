@@ -32,7 +32,8 @@ tar -zxvf MUSTC_v1.0_en-de.tar.gz
 2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the path of speech data (the directory of previous step).
 3. Preprocess data with
 ```bash
-bash DATA/get_mustc.sh
+cd DATA
+bash get_mustc.sh
 ```
 The output manifest files should appear under `${DATA_ROOT}/en-de/`. 
 
@@ -73,8 +74,7 @@ bash 0b-create-distill-tsv.sh # generate distillation data at ${DATA_ROOT}/disti
 ## ASR Pretraining
 We also need an offline ASR model to initialize our ST models. Note that the encoder arch should match the downstream st model.
 ```bash
-bash 1-autoregressive_asr.sh # autoregressive ASR
-bash 3-causal_to_causal_asr.sh # autoregressive ASR with a causal encoder
+bash 1-offline_asr.sh # autoregressive ASR
 ```
 A facebook pretrained ASR for `convtransformer_espnet` can be downloaded [here](https://dl.fbaipublicfiles.com/simultaneous_translation/must_c_v1_en_de_pretrained_asr)
 ```bash
