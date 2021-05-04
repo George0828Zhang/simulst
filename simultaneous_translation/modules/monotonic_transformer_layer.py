@@ -14,11 +14,49 @@ from torch import Tensor
 
 
 class TransformerMonotonicEncoderLayer(TransformerEncoderLayer):
+
+    def _future_mask(self, tensor):
+        dim = tensor.size(0)        
+        future_mask = torch.triu(
+            utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
+        )
+        future_mask = future_mask.to(tensor)
+        return future_mask
+
     def forward(self, x, encoder_padding_mask):
-        seq_len, _, _ = x.size()
-        attn_mask = x.new_ones([seq_len, seq_len]).triu(1)
-        attn_mask = attn_mask.masked_fill(attn_mask.bool(), float("-inf"))
-        return super().forward(x, encoder_padding_mask, attn_mask)
+        
+        attn_mask = self._future_mask(x)
+
+        ######################################
+        # below is same as original          #
+        ######################################
+
+        residual = x
+        if self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+        x, _ = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=encoder_padding_mask,
+            attn_mask=attn_mask,
+        )
+        x = self.dropout_module(x)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+
+        residual = x
+        if self.normalize_before:
+            x = self.final_layer_norm(x)
+        x = self.activation_fn(self.fc1(x))
+        x = self.activation_dropout_module(x)
+        x = self.fc2(x)
+        x = self.dropout_module(x)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.final_layer_norm(x)
+        return x
 
 
 class TransformerMonotonicDecoderLayer(TransformerDecoderLayer):
