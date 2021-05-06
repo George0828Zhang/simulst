@@ -12,16 +12,71 @@
 #       http://www.interspeech2020.org/uploadfile/pdf/Tue-1-1-2.pdf
 
 import logging
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import torch
-import torch.nn as nn
 
-from fairseq.modules import TransformerDecoderLayer # noqa
+from fairseq import utils
+from fairseq.modules import TransformerEncoderLayer, TransformerDecoderLayer
 from torch import Tensor
 
 logger = logging.getLogger(__name__)
+
+
+class CausalTransformerEncoderLayer(TransformerEncoderLayer):
+    def __init__(self, args):
+        super().__init__(args)
+        self._future_mask = torch.empty(0)
+
+    def buffered_future_mask(self, tensor):
+        dim = tensor.size(0)
+        # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
+        if (
+            self._future_mask.size(0) == 0
+            or (not self._future_mask.device == tensor.device)
+            or self._future_mask.size(0) < dim
+        ):
+            self._future_mask = torch.triu(
+                utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
+            )
+        self._future_mask = self._future_mask.to(tensor)
+        return self._future_mask[:dim, :dim]
+
+    def forward(self, x, encoder_padding_mask):
+
+        attn_mask = self.buffered_future_mask(x)
+
+        ######################################
+        # below is same as original          #
+        ######################################
+
+        residual = x
+        if self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+        x, _ = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=encoder_padding_mask,
+            attn_mask=attn_mask,
+        )
+        x = self.dropout_module(x)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+
+        residual = x
+        if self.normalize_before:
+            x = self.final_layer_norm(x)
+        x = self.activation_fn(self.fc1(x))
+        x = self.activation_dropout_module(x)
+        x = self.fc2(x)
+        x = self.dropout_module(x)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.final_layer_norm(x)
+        return x
+
 
 class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
     """Wait-k Decoder layer block.
@@ -59,7 +114,7 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
         """
         if need_head_weights:
             need_attn = True
-        
+
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
@@ -68,14 +123,14 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
             #     incremental_state = {}
             prev_key, prev_value = prev_self_attn_state[:2]
             saved_state: Dict[str, Optional[Tensor]] = {
-                "prev_key": prev_key, 
+                "prev_key": prev_key,
                 "prev_value": prev_value,
             }
             if len(prev_self_attn_state) >= 3:
                 saved_state["prev_key_padding_mask"] = prev_self_attn_state[2]
             assert incremental_state is not None
             self.self_attn._set_input_buffer(incremental_state, saved_state)
-        
+
         x, attn = self.self_attn(
             query=x,
             key=x,

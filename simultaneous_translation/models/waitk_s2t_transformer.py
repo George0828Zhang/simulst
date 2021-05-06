@@ -25,24 +25,27 @@ from fairseq.data.data_utils import lengths_to_padding_mask
 from torch import Tensor
 
 from fairseq.models import (
-    FairseqEncoderModel, 
-    register_model, 
+    register_model,
     register_model_architecture
 )
 from fairseq.models.transformer import (
     TransformerDecoder,
-    Embedding, 
+    Embedding,
     Linear,
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.models.speech_to_text.s2t_transformer import (
-    S2TTransformerModel, 
+    S2TTransformerModel,
     S2TTransformerEncoder as S2TTransformerEncoderProto,
     s2t_transformer_s,
 )
 
 # user
-from simultaneous_translation.modules import WaitkTransformerDecoderLayer
+from simultaneous_translation.modules import (
+    WaitkTransformerDecoderLayer,
+    CausalConv1dSubsampler,
+    CausalTransformerEncoderLayer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +68,15 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
             metavar="STR",
             help="model to take decoder weights from (for initialization)",
         )
+        parser.add_argument('--causal', action='store_true', default=False,
+                            help='make the encoder causal.')
         parser.add_argument('--waitk', type=int, required=True,
                             help='wait-k for incremental reading')
-        parser.add_argument('--min-waitk', type=int, 
+        parser.add_argument('--min-waitk', type=int,
                             help='wait-k for incremental reading')
-        parser.add_argument('--max-waitk', type=int, 
+        parser.add_argument('--max-waitk', type=int,
                             help='wait-k for incremental reading')
-        parser.add_argument('--multi-waitk', action='store_true',  default=False,)
+        parser.add_argument('--multi-waitk', action='store_true', default=False,)
         parser.add_argument(
             "--pre-decision-ratio",
             type=int,
@@ -85,7 +90,7 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
 
     @classmethod
     def build_encoder(cls, args):
-        encoder = S2TFullContextEncoder(args)
+        encoder = S2TCausalEncoder(args) if args.causal else S2TFullContextEncoder(args)
         encoder.apply(init_bert_params)
         if getattr(args, "load_pretrained_encoder_from", None):
             encoder = checkpoint_utils.load_pretrained_component_from_model(
@@ -143,8 +148,8 @@ class S2TFullContextEncoder(S2TTransformerEncoderProto):
         }
 
     def slice_encoder_out(self, encoder_out, context_size):
-        """ Slice encoder output according to *context_size*.  
-        encoder_out: 
+        """ Slice encoder output according to *context_size*.
+        encoder_out:
             (S, N, E) -> (context_size, N, E)
         encoder_padding_mask:
             (N, S) -> (N, context_size)
@@ -182,6 +187,22 @@ class S2TFullContextEncoder(S2TTransformerEncoderProto):
             "src_lengths": [],  # B x 1
         }
 
+class S2TCausalEncoder(S2TFullContextEncoder):
+    """Speech-to-text Transformer encoder that consists of input subsampler.
+    """
+    def __init__(self, args):
+        super().__init__(args)
+        self.subsample = CausalConv1dSubsampler(
+            args.input_feat_per_channel * args.input_channels,
+            args.conv_channels,
+            args.encoder_embed_dim,
+            [int(k) for k in args.conv_kernel_sizes.split(",")],
+        )
+        self.transformer_layers = nn.ModuleList([])
+        self.transformer_layers.extend(
+            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
+        )
+
 class WaitkTransformerDecoder(TransformerDecoder):
     """
     1. Adds wait-k encoder_masks in training.
@@ -202,7 +223,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
         self.pre_decision_ratio = args.pre_decision_ratio
 
     def build_decoder_layer(self, args, no_encoder_attn=False):
-        # change to waitk layer. 
+        # change to waitk layer.
         return WaitkTransformerDecoderLayer(args, no_encoder_attn)
 
     def get_attention_mask(self, x, src_len, waitk=None, pre_decision_ratio=None):
@@ -216,7 +237,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
         if pre_decision_ratio is None:
             pre_decision_ratio = self.pre_decision_ratio
-        
+
         fake_waitk = waitk * pre_decision_ratio
 
         if fake_waitk < src_len:
@@ -311,13 +332,13 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
         if self.layer_norm is not None:
             x = self.layer_norm(x)
-        
+
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
-        
+
         return x, {"attn": [attn], "inner_states": inner_states}
 
 @register_model_architecture(
@@ -325,6 +346,6 @@ class WaitkTransformerDecoder(TransformerDecoder):
 )
 def waitk_s2t_transformer_s(args):
     s2t_transformer_s(args)
-    args.waitk = getattr(args, 'waitk', 1024) # wait-until-end
+    args.waitk = getattr(args, 'waitk', 1024)  # wait-until-end
     args.min_waitk = getattr(args, 'min_waitk', 1)
     args.max_waitk = getattr(args, 'max_waitk', 1024)
