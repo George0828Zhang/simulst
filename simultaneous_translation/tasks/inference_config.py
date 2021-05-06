@@ -37,11 +37,6 @@ class InferenceConfig(object):
         return self.eval_bleu or self.eval_wer
 
     @property
-    def eval_bleu(self):
-        """evaluation with BLEU score in validation step."""
-        return self.config.get("eval_bleu", False)    
-
-    @property
     def generation_args(self):
         """generation args for BLUE scoring, e.g., \'{"beam": 4, "lenpen": 0.6}\', as JSON string"""
         args = self.config.get("generation_args", {})

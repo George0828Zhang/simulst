@@ -16,6 +16,7 @@ from fairseq.scoring.wer import WerScorer
 logger = logging.getLogger(__name__)
 
 from .inference_config import InferenceConfig
+from .waitk_sequence_generator import WaitkSequenceGenerator
 EVAL_BLEU_ORDER = 4
 
 @register_task("speech_to_text_infer")
@@ -43,8 +44,17 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
     def build_model(self, args):
         model = super().build_model(args)
         if self.inference_cfg.eval_any:
+            waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
+            pre_ratio = 1
+            if waitk is not None:
+                pre_ratio = model.pre_decision_ratio
+                logger.warning(f"Using Wait-{waitk}, ratio-{pre_ratio} generator!")
+
             self.sequence_generator = self.build_generator(
-                [model], self.inference_cfg.generation_args
+                [model],
+                self.inference_cfg.generation_args,
+                seq_gen_cls=None if waitk is None else WaitkSequenceGenerator,
+                extra_gen_cls_kwargs=None if waitk is None else {"waitk": waitk, "pre_decision_ratio": pre_ratio},
             )
         return model
 

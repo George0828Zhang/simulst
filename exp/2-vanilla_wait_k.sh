@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 TASK=wait_9
 . ./data_path.sh
-ASR_MODEL=./checkpoints/must_c_de_asr_transformer_s.pt
+ASR_MODEL=./checkpoints/fb_offline_asr/avg_best_5_checkpoint.pt
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -12,21 +12,21 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --update-freq 8 \
     --task speech_to_text_infer  \
     --inference-config-yaml infer_simulst.yaml \
-    --arch s2t_transformer_simul_trans_s --encoder-freezing-updates 0 \
-    --simul-type waitk_fixed_pre_decision  \
-    --waitk-lagging 9 \
-    --fixed-pre-decision-ratio 7 \
+    --arch waitk_s2t_transformer_s --encoder-freezing-updates 0 \
+    --waitk 9 \
+    --pre-decision-ratio 7 \
     --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
     --clip-norm 10.0 \
-    --optimizer adam --lr 1e-4 --lr-scheduler inverse_sqrt \
+    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 100000 \
     --wandb-project simulst \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \
-    --save-interval-updates 200 \
+    --save-interval-updates 500 \
     --keep-interval-updates 5 \
     --patience 50 \
     --log-format simple --log-interval 10 \
-    --num-workers 4 \
+    --num-workers 8 \
+    --fp16 \
     --seed 2

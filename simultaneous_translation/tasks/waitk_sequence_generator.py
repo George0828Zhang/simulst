@@ -1,12 +1,20 @@
+#!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+# Adapted from https://github.com/elbayadm/attn2d/blob/master/examples/waitk
+# Implementation of the papers:
+#   *SimulMT to SimulST: Adapting Simultaneous Text Translation to
+#       End-to-End Simultaneous Speech Translation
+#       https://www.aclweb.org/anthology/2020.aacl-main.58.pdf
+#   *Efficient Wait-k Models for Simultaneous Machine Translation
+#       http://www.interspeech2020.org/uploadfile/pdf/Tue-1-1-2.pdf
 
 import math
 from typing import Dict, List, Optional
 
-import torch
+import torch # noqa
 import torch.nn as nn
 from fairseq import search, utils
 from fairseq.data import data_utils
@@ -36,6 +44,8 @@ class WaitkSequenceGenerator(nn.Module):
         symbols_to_strip_from_output=None,
         lm_model=None,
         lm_weight=1.0,
+        waitk=1024,
+        pre_decision_ratio=1,
     ):
         """Generates translations of a given source sentence.
 
@@ -113,6 +123,8 @@ class WaitkSequenceGenerator(nn.Module):
         self.lm_weight = lm_weight
         if self.lm_model is not None:
             self.lm_model.eval()
+        self.waitk = waitk
+        self.pre_decision_ratio = pre_decision_ratio
 
     def cuda(self):
         self.model.cuda()
@@ -135,39 +147,6 @@ class WaitkSequenceGenerator(nn.Module):
                 (default: self.eos)
         """
         return self._generate(sample, prefix_tokens, bos_token=bos_token)
-
-    # TODO(myleott): unused, deprecate after pytorch-translate migration
-    def generate_batched_itr(self, data_itr, beam_size=None, cuda=False, timer=None):
-        """Iterate over a batched dataset and yield individual translations.
-        Args:
-            cuda (bool, optional): use GPU for generation
-            timer (StopwatchMeter, optional): time generations
-        """
-        for sample in data_itr:
-            s = utils.move_to_cuda(sample) if cuda else sample
-            if "net_input" not in s:
-                continue
-            input = s["net_input"]
-            # model.forward normally channels prev_output_tokens into the decoder
-            # separately, but SequenceGenerator directly calls model.encoder
-            encoder_input = {
-                k: v for k, v in input.items() if k != "prev_output_tokens"
-            }
-            if timer is not None:
-                timer.start()
-            with torch.no_grad():
-                hypos = self.generate(encoder_input)
-            if timer is not None:
-                timer.stop(sum(len(h[0]["tokens"]) for h in hypos))
-            for i, id in enumerate(s["id"].data):
-                # remove padding
-                src = utils.strip_pad(input["src_tokens"].data[i, :], self.pad)
-                ref = (
-                    utils.strip_pad(s["target"].data[i, :], self.pad)
-                    if s["target"] is not None
-                    else None
-                )
-                yield id, src, ref, hypos[i]
 
     @torch.no_grad()
     def generate(self, models, sample: Dict[str, Dict[str, Tensor]], **kwargs) -> List[List[Dict[str, Tensor]]]:
@@ -263,6 +242,7 @@ class WaitkSequenceGenerator(nn.Module):
         )  # +2 for eos and pad
         tokens[:, 0] = self.eos if bos_token is None else bos_token
         attn: Optional[Tensor] = None
+        contexts = []
 
         # A list that indicates candidates that should be ignored.
         # For example, suppose we're sampling and have already finalized 2/5
@@ -320,10 +300,13 @@ class WaitkSequenceGenerator(nn.Module):
                     encoder_outs, reorder_state
                 )
 
+            context_size = step + self.waitk*self.pre_decision_ratio
+            contexts.append(context_size)
+
             lprobs, avg_attn_scores = self.model.forward_decoder(
                 tokens[:, : step + 1],
-                encoder_outs,
-                incremental_states,
+                self.model.slice_source(encoder_outs, context_size),
+                incremental_states, # ?
                 self.temperature,
             )
 
@@ -418,6 +401,7 @@ class WaitkSequenceGenerator(nn.Module):
                     eos_scores,
                     tokens,
                     scores,
+                    contexts,
                     finalized,
                     finished,
                     beam_size,
@@ -593,6 +577,7 @@ class WaitkSequenceGenerator(nn.Module):
         eos_scores,
         tokens,
         scores,
+        contexts,
         finalized: List[List[Dict[str, Tensor]]],
         finished: List[bool],
         beam_size: int,
@@ -670,6 +655,8 @@ class WaitkSequenceGenerator(nn.Module):
             if self.match_source_len and step > src_lengths[unfin_idx]:
                 score = torch.tensor(-math.inf).to(score)
 
+            ctx_hyp = [min(c, src_lengths[i].item()) for c in contexts]
+
             # An input sentence (among those in a batch) is finished when
             # beam_size hypotheses have been collected for it
             if len(finalized[sent]) < beam_size:
@@ -683,6 +670,7 @@ class WaitkSequenceGenerator(nn.Module):
                     {
                         "tokens": tokens_clone[i],
                         "score": score,
+                        "context": ctx_hyp,
                         "attention": hypo_attn,  # src_len x tgt_len
                         "alignment": torch.empty(0),
                         "positional_scores": pos_scores[i],
@@ -757,6 +745,12 @@ class EnsembleModel(nn.Module):
         if not self.has_encoder():
             return None
         return [model.encoder.forward_torchscript(net_input) for model in self.models]
+
+    def slice_source(self, encoder_out, context_size):
+        return [
+            model.encoder.slice_encoder_out(encoder_out[m], context_size)
+            for m, model in enumerate(self.models)
+        ]
 
     @torch.jit.export
     def forward_decoder(
@@ -859,112 +853,3 @@ class EnsembleModel(nn.Module):
             model.decoder.reorder_incremental_state_scripting(
                 incremental_states[i], new_order
             )
-
-
-class SequenceGeneratorWithAlignment(SequenceGenerator):
-    def __init__(
-        self, models, tgt_dict, left_pad_target=False, print_alignment="hard", **kwargs
-    ):
-        """Generates translations of a given source sentence.
-
-        Produces alignments following "Jointly Learning to Align and
-        Translate with Transformer Models" (Garg et al., EMNLP 2019).
-
-        Args:
-            left_pad_target (bool, optional): Whether or not the
-                hypothesis should be left padded or not when they are
-                teacher forced for generating alignments.
-        """
-        super().__init__(EnsembleModelWithAlignment(models), tgt_dict, **kwargs)
-        self.left_pad_target = left_pad_target
-
-        if print_alignment == "hard":
-            self.extract_alignment = utils.extract_hard_alignment
-        elif print_alignment == "soft":
-            self.extract_alignment = utils.extract_soft_alignment
-
-    @torch.no_grad()
-    def generate(self, models, sample, **kwargs):
-        finalized = super()._generate(sample, **kwargs)
-
-        src_tokens = sample["net_input"]["src_tokens"]
-        bsz = src_tokens.shape[0]
-        beam_size = self.beam_size
-        (
-            src_tokens,
-            src_lengths,
-            prev_output_tokens,
-            tgt_tokens,
-        ) = self._prepare_batch_for_alignment(sample, finalized)
-        if any(getattr(m, "full_context_alignment", False) for m in self.model.models):
-            attn = self.model.forward_align(src_tokens, src_lengths, prev_output_tokens)
-        else:
-            attn = [
-                finalized[i // beam_size][i % beam_size]["attention"].transpose(1, 0)
-                for i in range(bsz * beam_size)
-            ]
-
-        if src_tokens.device != "cpu":
-            src_tokens = src_tokens.to("cpu")
-            tgt_tokens = tgt_tokens.to("cpu")
-            attn = [i.to("cpu") for i in attn]
-
-        # Process the attn matrix to extract hard alignments.
-        for i in range(bsz * beam_size):
-            alignment = self.extract_alignment(
-                attn[i], src_tokens[i], tgt_tokens[i], self.pad, self.eos
-            )
-            finalized[i // beam_size][i % beam_size]["alignment"] = alignment
-        return finalized
-
-    def _prepare_batch_for_alignment(self, sample, hypothesis):
-        src_tokens = sample["net_input"]["src_tokens"]
-        bsz = src_tokens.shape[0]
-        src_tokens = (
-            src_tokens[:, None, :]
-            .expand(-1, self.beam_size, -1)
-            .contiguous()
-            .view(bsz * self.beam_size, -1)
-        )
-        src_lengths = sample["net_input"]["src_lengths"]
-        src_lengths = (
-            src_lengths[:, None]
-            .expand(-1, self.beam_size)
-            .contiguous()
-            .view(bsz * self.beam_size)
-        )
-        prev_output_tokens = data_utils.collate_tokens(
-            [beam["tokens"] for example in hypothesis for beam in example],
-            self.pad,
-            self.eos,
-            self.left_pad_target,
-            move_eos_to_beginning=True,
-        )
-        tgt_tokens = data_utils.collate_tokens(
-            [beam["tokens"] for example in hypothesis for beam in example],
-            self.pad,
-            self.eos,
-            self.left_pad_target,
-            move_eos_to_beginning=False,
-        )
-        return src_tokens, src_lengths, prev_output_tokens, tgt_tokens
-
-
-class EnsembleModelWithAlignment(EnsembleModel):
-    """A wrapper around an ensemble of models."""
-
-    def __init__(self, models):
-        super().__init__(models)
-
-    def forward_align(self, src_tokens, src_lengths, prev_output_tokens):
-        avg_attn = None
-        for model in self.models:
-            decoder_out = model(src_tokens, src_lengths, prev_output_tokens)
-            attn = decoder_out[1]["attn"][0]
-            if avg_attn is None:
-                avg_attn = attn
-            else:
-                avg_attn.add_(attn)
-        if len(self.models) > 1:
-            avg_attn.div_(len(self.models))
-        return avg_attn
