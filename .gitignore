@@ -130,11 +130,14 @@ data-bin/
 .vscode/settings.json
 
 # Experimental Folder
-experimental/*
+DATA/mustc
 checkpoints/
 logdir/
 fairseq
 fairseq_cli
+eval/*result*
+eval/data
+
 
 # Weights and Biases logs
 wandb/

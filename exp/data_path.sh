@@ -1,5 +1,5 @@
 export SRC=en
-export TGT=de
+export TGT=es
 export DATA=/media/george/Data/mustc/${SRC}-${TGT}
 
 FAIRSEQ=`realpath ..`
