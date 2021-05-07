@@ -6,7 +6,7 @@ vocab=8000
 vtype=unigram
 workers=4
 
-FAIRSEQ=../
+FAIRSEQ=../fairseq
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 # source ~/envs/apex/bin/activate
 

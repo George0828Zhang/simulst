@@ -22,6 +22,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --best-checkpoint-metric wer \
     --save-interval-updates 500 \
     --keep-interval-updates 5 \
+    --keep-best-checkpoints 5 \
     --patience 60 \
     --log-format simple --log-interval 10 \
     --num-workers 4 \
