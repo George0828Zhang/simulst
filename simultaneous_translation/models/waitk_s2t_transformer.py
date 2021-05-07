@@ -68,8 +68,6 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
             metavar="STR",
             help="model to take decoder weights from (for initialization)",
         )
-        parser.add_argument('--causal', action='store_true', default=False,
-                            help='make the encoder causal.')
         parser.add_argument('--waitk', type=int, required=True,
                             help='wait-k for incremental reading')
         parser.add_argument('--min-waitk', type=int,
@@ -90,7 +88,7 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
 
     @classmethod
     def build_encoder(cls, args):
-        encoder = S2TCausalEncoder(args) if args.causal else S2TFullContextEncoder(args)
+        encoder = S2TCausalEncoder(args)
         encoder.apply(init_bert_params)
         if getattr(args, "load_pretrained_encoder_from", None):
             encoder = checkpoint_utils.load_pretrained_component_from_model(

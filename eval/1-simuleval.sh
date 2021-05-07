@@ -2,14 +2,14 @@
 TASK=wait_9
 SPLIT=dev #tst-COMMON
 EVAL_DATA=./data
-AGENT=./agents/fairseq_simul_st_agent.py
+AGENT=./agents/waitk_fixed_predecision_agent.py
 EXP=../exp
 . ${EXP}/data_path.sh
 CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
 AVG=false
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 if [[ $AVG == "true" ]]; then
   CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
@@ -32,4 +32,6 @@ simuleval \
   --config ${CONF} \
   --model-path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
   --output ${OUTPUT} \
-  --scores
+  --scores \
+  --force-finish \
+  --test-waitk 1024

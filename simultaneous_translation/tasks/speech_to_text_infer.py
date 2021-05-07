@@ -84,7 +84,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         def decode(toks, escape_unk=False):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
-                self.inference_cfg.post_process, # this will handle bpe for us.
+                self.inference_cfg.post_process,  # this will handle bpe for us.
                 # The default unknown string in fairseq is `<unk>`, but
                 # this is tokenized by sacrebleu as `< unk >`, inflating
                 # BLEU scores. Instead, we use a somewhat more verbose
@@ -99,7 +99,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         gen_out = self.inference_step(generator, [model], sample, prefix_tokens=None)
         hyps, refs = [], []
         for i in range(len(gen_out)):
-            hyps.append(                
+            hyps.append(
                 decode(gen_out[i][0]["tokens"])
             )
             refs.append(
@@ -117,10 +117,10 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             bleu_scorer = SacrebleuScorer(self.inference_cfg.eval_bleu_args)
             for h, r in zip(hyps, refs):
                 bleu_scorer.add_string(ref=r, pred=h)
-            
+
             ret["bleu"] = bleu_scorer.sacrebleu.corpus_bleu(
-                bleu_scorer.pred, [bleu_scorer.ref], 
-                tokenize="none" # use none because it's handled by SacrebleuScorer
+                bleu_scorer.pred, [bleu_scorer.ref],
+                tokenize="none"  # use none because it's handled by SacrebleuScorer
             )
 
         if self.inference_cfg.eval_wer:
@@ -129,8 +129,8 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
                 wer_scorer.add_string(ref=r, pred=h)
 
             ret["wer"] = {
-                "wv_errors": wer_scorer.distance, 
-                "w_errors": wer_scorer.distance, 
+                "wv_errors": wer_scorer.distance,
+                "w_errors": wer_scorer.distance,
                 "w_total": wer_scorer.ref_length
             }
 
@@ -145,7 +145,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             if torch.is_tensor(result):
                 result = result.cpu()
             return result
-        
+
         if self.inference_cfg.eval_bleu:
 
             counts, totals = [], []
@@ -188,7 +188,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
 
             metrics.log_scalar("_w_errors", w_errors)
             metrics.log_scalar("_wv_errors", wv_errors)
-            metrics.log_scalar("_w_total", w_total)            
+            metrics.log_scalar("_w_total", w_total)
 
             if w_total > 0:
                 metrics.log_derived(

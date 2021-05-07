@@ -300,13 +300,13 @@ class WaitkSequenceGenerator(nn.Module):
                     encoder_outs, reorder_state
                 )
 
-            context_size = step + self.waitk*self.pre_decision_ratio
+            context_size = step + self.waitk * self.pre_decision_ratio
             contexts.append(context_size)
 
             lprobs, avg_attn_scores = self.model.forward_decoder(
                 tokens[:, : step + 1],
                 self.model.slice_source(encoder_outs, context_size),
-                incremental_states, # ?
+                incremental_states,  # ?
                 self.temperature,
             )
 
@@ -326,7 +326,7 @@ class WaitkSequenceGenerator(nn.Module):
             # handle max length constraint
             if step >= max_len:
                 lprobs[:, : self.eos] = -math.inf
-                lprobs[:, self.eos + 1 :] = -math.inf
+                lprobs[:, self.eos + 1:] = -math.inf
 
             # handle prefix tokens (possibly with different lengths)
             if (
@@ -553,7 +553,7 @@ class WaitkSequenceGenerator(nn.Module):
         if eos_mask.any():
             # validate that the first beam matches the prefix
             first_beam = tokens[eos_mask].view(-1, beam_size, tokens.size(-1))[
-                :, 0, 1 : step + 1
+                :, 0, 1: step + 1
             ]
             eos_mask_batch_dim = eos_mask.view(-1, beam_size)[:, 0]
             target_prefix = prefix_tokens[eos_mask_batch_dim][:, :step]
@@ -599,12 +599,12 @@ class WaitkSequenceGenerator(nn.Module):
         # tokens is (batch * beam, max_len). So the index_select
         # gets the newly EOS rows, then selects cols 1..{step + 2}
         tokens_clone = tokens.index_select(0, bbsz_idx)[
-            :, 1 : step + 2
+            :, 1: step + 2
         ]  # skip the first index, which is EOS
 
         tokens_clone[:, step] = self.eos
         attn_clone = (
-            attn.index_select(0, bbsz_idx)[:, :, 1 : step + 2]
+            attn.index_select(0, bbsz_idx)[:, :, 1: step + 2]
             if attn is not None
             else None
         )

@@ -1,2 +1,2 @@
-from .waitk_transformer_layers import WaitkTransformerDecoderLayer
+from .waitk_transformer_layers import WaitkTransformerDecoderLayer, CausalTransformerEncoderLayer
 from .causal_conv_subsampler import CausalConv1dSubsampler
