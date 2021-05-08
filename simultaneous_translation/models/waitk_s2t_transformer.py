@@ -222,19 +222,23 @@ class WaitkTransformerDecoder(TransformerDecoder):
         if pre_decision_ratio is None:
             pre_decision_ratio = self.pre_decision_ratio
 
-        fake_waitk = waitk * pre_decision_ratio
+        pooled_src_len = src_len // pre_decision_ratio + 1
 
-        if fake_waitk < src_len:
-            encoder_attn_mask = torch.triu(
-                utils.fill_with_neg_inf(
-                    x.new(x.size(0), src_len)
-                ), fake_waitk
-            )
-            if fake_waitk <= 0:
-                encoder_attn_mask[:, 0] = 0
+        if waitk >= pooled_src_len:
+            return None
 
-        else:
-            encoder_attn_mask = None
+        encoder_attn_mask = torch.triu(
+            utils.fill_with_neg_inf(
+                x.new(x.size(0), pooled_src_len)
+            ), waitk
+        )
+        if waitk <= 0:
+            encoder_attn_mask[:, 0] = 0
+
+        # upsample
+        encoder_attn_mask = encoder_attn_mask.repeat_interleave(
+            pre_decision_ratio, dim=1)[:, :src_len]
+
         return encoder_attn_mask
 
     def extract_features_scriptable(
