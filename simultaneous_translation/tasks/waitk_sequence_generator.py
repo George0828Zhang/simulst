@@ -312,6 +312,7 @@ class WaitkSequenceGenerator(nn.Module):
                 incremental_states,  # ?
                 self.temperature,
             )
+            avg_attn_scores = None
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
