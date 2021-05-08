@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-TASK=wait_9
+WAITK=9
+TASK=wait_${WAITK}
 . ./data_path.sh
 ASR_MODEL=./checkpoints/mustc_de_asr_transformer_s_causal.pt
 
@@ -12,8 +13,8 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --update-freq 8 \
     --task speech_to_text_infer  \
     --inference-config-yaml infer_simulst.yaml \
-    --arch waitk_s2t_transformer_s --encoder-freezing-updates 0 \
-    --causal --waitk 9 --pre-decision-ratio 7 \
+    --arch waitk_s2t_transformer_s \
+    --waitk ${WAITK} --pre-decision-ratio 7 \
     --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
     --clip-norm 10.0 \
     --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \

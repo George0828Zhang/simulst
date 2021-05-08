@@ -6,7 +6,7 @@
 import logging
 import numpy as np
 from fairseq import metrics, utils
-from fairseq.tasks import register_task
+from fairseq.tasks import register_task, LegacyFairseqTask
 from fairseq.tasks.speech_to_text import SpeechToTextTask
 from fairseq.logging.meters import safe_round
 
@@ -40,23 +40,43 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         # bpe_tokenizer is handled by post_process.
         self.pre_tokenizer = self.build_tokenizer(None)
 
-
     def build_model(self, args):
         model = super().build_model(args)
         if self.inference_cfg.eval_any:
-            waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
-            pre_ratio = 1
-            if waitk is not None:
-                pre_ratio = model.pre_decision_ratio
-                logger.warning(f"Using Wait-{waitk}, ratio-{pre_ratio} generator!")
-
             self.sequence_generator = self.build_generator(
                 [model],
                 self.inference_cfg.generation_args,
-                seq_gen_cls=None if waitk is None else WaitkSequenceGenerator,
-                extra_gen_cls_kwargs=None if waitk is None else {"waitk": waitk, "pre_decision_ratio": pre_ratio},
             )
         return model
+
+    def build_generator(
+        self,
+        models,
+        args,
+        seq_gen_cls=None,
+        extra_gen_cls_kwargs=None,
+    ):
+        """ speech_to_text ignores seq_gen_cls and overrides 
+        extra_gen_cls_kwargs. So we will call LegacyFairseqTask's 
+        method. """
+        waitk = getattr(models[0], "waitk", None)
+        test_waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
+        if test_waitk is not None:
+            # test override.
+            logger.warning(f"Train test mismatch: training wait-{waitk}, while testing wait-{test_waitk}.")
+            waitk = test_waitk
+        pre_ratio = 1
+        if waitk is not None:
+            pre_ratio = models[0].pre_decision_ratio
+            seq_gen_cls = WaitkSequenceGenerator
+            extra = {"waitk": waitk, "pre_decision_ratio": pre_ratio}
+            if extra_gen_cls_kwargs:
+                extra_gen_cls_kwargs.update(extra)
+            else:
+                extra_gen_cls_kwargs = extra
+        return LegacyFairseqTask.build_generator(
+            self, models, args, seq_gen_cls=seq_gen_cls, extra_gen_cls_kwargs=extra_gen_cls_kwargs
+        )
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
@@ -97,8 +117,11 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             return s if s else "UNKNOWNTOKENINHYP"
 
         gen_out = self.inference_step(generator, [model], sample, prefix_tokens=None)
-        hyps, refs = [], []
+        ctxs, hyps, refs = [], [], []
         for i in range(len(gen_out)):
+            ctxs.append(
+                gen_out[i][0]["context"]
+            )
             hyps.append(
                 decode(gen_out[i][0]["tokens"])
             )
@@ -109,6 +132,8 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
                 )
             )
         if self.inference_cfg.print_samples:
+            # if len(ctxs) > 0:
+            #     logger.info("example context: " + ctxs[0])
             logger.info("example hypothesis: " + hyps[0])
             logger.info("example reference: " + refs[0])
 

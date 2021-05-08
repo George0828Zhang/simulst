@@ -14,6 +14,7 @@
 import math
 from typing import Dict, List, Optional
 
+import logging
 import torch # noqa
 import torch.nn as nn
 from fairseq import search, utils
@@ -22,6 +23,7 @@ from fairseq.models import FairseqIncrementalDecoder
 from torch import Tensor
 from fairseq.ngram_repeat_block import NGramRepeatBlock
 
+logger = logging.getLogger(__name__)
 
 class WaitkSequenceGenerator(nn.Module):
     def __init__(
@@ -125,6 +127,7 @@ class WaitkSequenceGenerator(nn.Module):
             self.lm_model.eval()
         self.waitk = waitk
         self.pre_decision_ratio = pre_decision_ratio
+        logger.warning(f"Using Wait-{waitk}, ratio-{pre_decision_ratio} generator!")
 
     def cuda(self):
         self.model.cuda()
@@ -300,7 +303,7 @@ class WaitkSequenceGenerator(nn.Module):
                     encoder_outs, reorder_state
                 )
 
-            context_size = step + self.waitk * self.pre_decision_ratio
+            context_size = (step + self.waitk) * self.pre_decision_ratio
             contexts.append(context_size)
 
             lprobs, avg_attn_scores = self.model.forward_decoder(
@@ -396,18 +399,18 @@ class WaitkSequenceGenerator(nn.Module):
                 )
 
                 finalized_sents = self.finalize_hypos(
-                    step,
-                    eos_bbsz_idx,
-                    eos_scores,
-                    tokens,
-                    scores,
-                    contexts,
-                    finalized,
-                    finished,
-                    beam_size,
-                    attn,
-                    src_lengths,
-                    max_len,
+                    step=step,
+                    bbsz_idx=eos_bbsz_idx,
+                    eos_scores=eos_scores,
+                    tokens=tokens,
+                    scores=scores,
+                    contexts=contexts,
+                    finalized=finalized,
+                    finished=finished,
+                    beam_size=beam_size,
+                    attn=attn,
+                    src_lengths=src_lengths,
+                    max_len=max_len,
                 )
                 num_remaining_sent -= len(finalized_sents)
 
@@ -655,8 +658,6 @@ class WaitkSequenceGenerator(nn.Module):
             if self.match_source_len and step > src_lengths[unfin_idx]:
                 score = torch.tensor(-math.inf).to(score)
 
-            ctx_hyp = [min(c, src_lengths[i].item()) for c in contexts]
-
             # An input sentence (among those in a batch) is finished when
             # beam_size hypotheses have been collected for it
             if len(finalized[sent]) < beam_size:
@@ -670,7 +671,7 @@ class WaitkSequenceGenerator(nn.Module):
                     {
                         "tokens": tokens_clone[i],
                         "score": score,
-                        "context": ctx_hyp,
+                        "context": contexts,
                         "attention": hypo_attn,  # src_len x tgt_len
                         "alignment": torch.empty(0),
                         "positional_scores": pos_scores[i],

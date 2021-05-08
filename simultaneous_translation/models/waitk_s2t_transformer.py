@@ -52,11 +52,15 @@ logger = logging.getLogger(__name__)
 @register_model("waitk_s2t_transformer")
 class S2TWaitkTransformerModel(S2TTransformerModel):
     """
-    Waitk S2TTransformer with a bi-directional encoder
+    S2TTransformer with a uni-directional encoder and wait-k decoder
     """
     @property
     def pre_decision_ratio(self):
         return self.decoder.pre_decision_ratio
+
+    @property
+    def waitk(self):
+        return self.decoder.waitk
 
     @staticmethod
     def add_args(parser):
@@ -70,11 +74,6 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
         )
         parser.add_argument('--waitk', type=int, required=True,
                             help='wait-k for incremental reading')
-        parser.add_argument('--min-waitk', type=int,
-                            help='wait-k for incremental reading')
-        parser.add_argument('--max-waitk', type=int,
-                            help='wait-k for incremental reading')
-        parser.add_argument('--multi-waitk', action='store_true', default=False,)
         parser.add_argument(
             "--pre-decision-ratio",
             type=int,
@@ -110,12 +109,23 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
             )
         return decoder
 
+class S2TCausalEncoder(S2TTransformerEncoderProto):
+    """Speech-to-text Transformer encoder that consists of causal input subsampler
+    and causal attention.
+    """
+    def __init__(self, args):
+        super().__init__(args)
+        self.subsample = CausalConv1dSubsampler(
+            args.input_feat_per_channel * args.input_channels,
+            args.conv_channels,
+            args.encoder_embed_dim,
+            [int(k) for k in args.conv_kernel_sizes.split(",")],
+        )
+        self.transformer_layers = nn.ModuleList([])
+        self.transformer_layers.extend(
+            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
+        )
 
-class S2TFullContextEncoder(S2TTransformerEncoderProto):
-    """
-    1. Return encoder hidden states to be used in downstream modules.
-    2. add sliced_encoder_out
-    """
     def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False,):
         """ Same as prototype but returns hidden states """
         x, input_lengths = self.subsample(src_tokens, src_lengths)
@@ -185,22 +195,6 @@ class S2TFullContextEncoder(S2TTransformerEncoderProto):
             "src_lengths": [],  # B x 1
         }
 
-class S2TCausalEncoder(S2TFullContextEncoder):
-    """Speech-to-text Transformer encoder that consists of input subsampler.
-    """
-    def __init__(self, args):
-        super().__init__(args)
-        self.subsample = CausalConv1dSubsampler(
-            args.input_feat_per_channel * args.input_channels,
-            args.conv_channels,
-            args.encoder_embed_dim,
-            [int(k) for k in args.conv_kernel_sizes.split(",")],
-        )
-        self.transformer_layers = nn.ModuleList([])
-        self.transformer_layers.extend(
-            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
-        )
-
 class WaitkTransformerDecoder(TransformerDecoder):
     """
     1. Adds wait-k encoder_masks in training.
@@ -215,9 +209,6 @@ class WaitkTransformerDecoder(TransformerDecoder):
         super().__init__(args, dictionary, embed_tokens, **kwargs)
 
         self.waitk = args.waitk
-        self.min_waitk = args.min_waitk
-        self.max_waitk = args.max_waitk
-        self.multi_waitk = args.multi_waitk
         self.pre_decision_ratio = args.pre_decision_ratio
 
     def build_decoder_layer(self, args, no_encoder_attn=False):
@@ -226,12 +217,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
     def get_attention_mask(self, x, src_len, waitk=None, pre_decision_ratio=None):
         if waitk is None:
-            if self.multi_waitk:
-                assert self.min_waitk <= self.max_waitk
-                waitk = random.randint(min(self.min_waitk, src_len),
-                                       min(src_len, self.max_waitk))
-            else:
-                waitk = self.waitk
+            waitk = self.waitk
 
         if pre_decision_ratio is None:
             pre_decision_ratio = self.pre_decision_ratio
@@ -321,7 +307,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
                 x,
                 encoder_states,
                 encoder_padding_mask,
-                encoder_attn_mask=None,
+                encoder_attn_mask=encoder_attn_mask,
                 incremental_state=incremental_state,
                 self_attn_mask=self_attn_mask,
                 self_attn_padding_mask=self_attn_padding_mask,
@@ -344,6 +330,5 @@ class WaitkTransformerDecoder(TransformerDecoder):
 )
 def waitk_s2t_transformer_s(args):
     s2t_transformer_s(args)
-    args.waitk = getattr(args, 'waitk', 1024)  # wait-until-end
-    args.min_waitk = getattr(args, 'min_waitk', 1)
-    args.max_waitk = getattr(args, 'max_waitk', 1024)
+    args.waitk = getattr(args, 'waitk', 1024)  # default is wait-until-end
+    args.encoder_freezing_updates = 0  # disable this feature.
