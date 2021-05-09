@@ -133,7 +133,8 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         sinkhorn_dist, inv_rate, entropy = self.compute_sinkhorn_distance(
             model, net_output, sample)
 
-        loss = ls_loss + sinkhorn_dist * self.aux_factor
+        loss = (ls_loss / sample_size) + sinkhorn_dist * self.aux_factor
+        sample_size = 1
 
         logging_output = {
             "loss": loss.data,
@@ -164,12 +165,16 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
 
         cost = self.dist_fn(decoder_states, target_emb)
         if padding_mask.any():
-            cost.masked_fill_(
-                padding_mask.unsqueeze(1), cost.min().item() - 10  # hack
-            )
+            # mask out non-pad -> pad attentions.
+            log_alpha = (-cost).float().masked_fill(
+                padding_mask.unsqueeze(1) & (~padding_mask).unsqueeze(2),
+                float("-inf")
+            ).type_as(cost)
+        else:
+            log_alpha = -cost
 
         attn = gumbel_sinkhorn(
-            log_alpha=-cost,
+            log_alpha,
             tau=self.sinkhorn_temperature,
             n_iter=self.sinkhorn_iters,
             noise=True
@@ -180,7 +185,7 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
             loss.masked_fill_(
                 padding_mask.unsqueeze(2), 0
             )
-        loss = loss.sum()
+        loss = loss.mean() * L
 
         with torch.no_grad():
             # compute inversion rate
