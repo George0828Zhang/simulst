@@ -109,6 +109,29 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
             )
         return decoder
 
+    def forward_embeddings(self, tokens):
+        """ convenient function for sinkhorn loss """
+        return F.embedding(
+            tokens,
+            self.decoder.output_projection.weight
+        )
+
+    def output_projection(self, x):
+        """ convenient function for sinkhorn loss """
+        return self.decoder.output_projection(x)
+
+    def forward(self, src_tokens, src_lengths, prev_output_tokens):
+        """ convenient override for sinkhorn loss """
+        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
+        x, extra = self.decoder(
+            prev_output_tokens=prev_output_tokens,
+            encoder_out=encoder_out,
+            features_only=True,
+        )
+        extra["decoder_states"] = x
+        logits = self.decoder.output_projection(x)
+        return logits, extra
+
 class S2TCausalEncoder(S2TTransformerEncoderProto):
     """Speech-to-text Transformer encoder that consists of causal input subsampler
     and causal attention.
@@ -336,3 +359,4 @@ def waitk_s2t_transformer_s(args):
     s2t_transformer_s(args)
     args.waitk = getattr(args, 'waitk', 1024)  # default is wait-until-end
     args.encoder_freezing_updates = 0  # disable this feature.
+    args.share_decoder_input_output_embed = True  # force embed sharing
