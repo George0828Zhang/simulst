@@ -6,16 +6,16 @@
 import regex as re
 
 from fairseq.data.encoders import register_tokenizer
-from fairseq.dataclass import FairseqDataclass
+from fairseq.data.encoders.moses_tokenizer import MosesTokenizerConfig
 
 
-@register_tokenizer("rm_punc", dataclass=FairseqDataclass)
-class SpaceTokenizer(object):
+@register_tokenizer("lc_rm", dataclass=MosesTokenizerConfig)
+class LCRMTokenizer(object):
     def __init__(self, *unused):
-        self.puncs = re.compile(r'[\p{L}\p{Sm}]+')
+        self.puncs = re.compile(r'[\p{P}\p{Sm}]+')
 
     def encode(self, x: str) -> str:
-        return self.puncs.sub(" ", x)
+        return self.puncs.sub(" ", x.lower())
 
     def decode(self, x: str) -> str:
         return x

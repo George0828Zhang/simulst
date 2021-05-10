@@ -193,13 +193,13 @@ def process(args):
                 cur_root / "gcmvn.npz" if args.cmvn_type == "global"
                 else None
             ),
-            pre_tokenizer={
-                "tokenizer": "moses",
-                "source_lang": "en",
-                "target_lang": lang,
-                "moses_no_dash_splits": False,
-                "moses_no_escape": True
-            }
+            # pre_tokenizer={
+            #     "tokenizer": "moses",
+            #     "source_lang": "en",
+            #     "target_lang": lang,
+            #     "moses_no_dash_splits": False,
+            #     "moses_no_escape": True
+            # }
         )
         # Clean up
         shutil.rmtree(feature_root)
