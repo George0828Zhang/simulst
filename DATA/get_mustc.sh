@@ -5,7 +5,7 @@ DATA_ROOT=/media/george/Data/mustc
 vocab=8000
 vtype=unigram
 
-FAIRSEQ=../
+FAIRSEQ=../fairseq
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 source ~/envs/apex/bin/activate
 
