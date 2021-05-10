@@ -5,16 +5,16 @@ EXP=../exp
 . ${EXP}/data_path.sh
 CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
-AVG=false
+AVG=true
 
-GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 --lenpen 1.1"
+GENARGS="--beam 1 --max-len-a 1.2 --max-len-b 10 --lenpen 1.1"
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 if [[ $AVG == "true" ]]; then
-  CHECKPOINT_FILENAME=avg_last_5_checkpoint.pt
+  CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
   python ../scripts/average_checkpoints.py \
-    --inputs ${CHECKDIR} --num-update-checkpoints 5 \
+    --inputs ${CHECKDIR} --num-best-checkpoints 5 \
     --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
 else
   CHECKPOINT_FILENAME=checkpoint_best.pt

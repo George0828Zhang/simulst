@@ -1,6 +1,7 @@
 import math
 import os
 import json
+import pdb
 import logging
 import numpy as np
 import torch
@@ -89,7 +90,7 @@ class OnlineFeatureExtractor:
 
         x = np.subtract(input, mean)
         x = np.divide(x, std)
-        return x
+        return x.astype(np.float32)
 
 
 class TensorListEntry(ListEntry):
@@ -143,11 +144,11 @@ class FairseqSimulSTAgent(SpeechAgent):
         if args.global_stats:
             with PathManager.open(args.global_stats, "r") as f:
                 global_cmvn = json.loads(f.read())
-                self.global_cmvn = {"mean": global_cmvn["mean"], "std": global_cmvn["stddev"]}
+                args.global_cmvn = {"mean": global_cmvn["mean"], "std": global_cmvn["stddev"]}
 
         self.feature_extractor = OnlineFeatureExtractor(args)
 
-        self.max_len = args.max_len
+        self.max_len = lambda x: args.max_len_a * x + args.max_len_b
 
         self.force_finish = args.force_finish
 
@@ -183,8 +184,10 @@ class FairseqSimulSTAgent(SpeechAgent):
                             help="Subword splitter model path for target text")
         parser.add_argument("--user-dir", type=str, default="examples/simultaneous_translation",
                             help="User directory for simultaneous translation")
-        parser.add_argument("--max-len", type=int, default=200,
-                            help="Max length of translation")
+        parser.add_argument("--max-len-a", type=int, default=1.2,
+                            help="Max length of translation ax+b")
+        parser.add_argument("--max-len-b", type=int, default=10,
+                            help="Max length of translation ax+b")
         parser.add_argument("--force-finish", default=False, action="store_true",
                             help="Force the model to finish the hypothsis if the source is not finished")
         parser.add_argument("--shift-size", type=int, default=SHIFT_SIZE,
@@ -251,9 +254,9 @@ class FairseqSimulSTAgent(SpeechAgent):
         """
         queue: stores bpe tokens.
         server: accept words.
-        
-        Therefore, we need merge subwords into word. we find the first 
-        subword that starts with BOW_PREFIX, then merge with subwords 
+
+        Therefore, we need merge subwords into word. we find the first
+        subword that starts with BOW_PREFIX, then merge with subwords
         prior to this subword, remove them from queue, send to server.
         """
 
@@ -268,6 +271,19 @@ class FairseqSimulSTAgent(SpeechAgent):
         segment = []
         if None in unit_queue.value:
             unit_queue.value.remove(None)
+
+        src_len = math.ceil(states.encoder_states["encoder_out"][0].size(0) // self.pre_decision_ratio)
+        if (
+            (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
+            or len(states.units.target) > self.max_len(src_len)
+        ):
+            hyp = tgt_dict.string(
+                unit_queue,
+                "sentencepiece",
+            )
+            if self.pre_tokenizer is not None:
+                hyp = self.pre_tokenizer.decode(hyp)
+            return [hyp] + [DEFAULT_EOS]
 
         for index in unit_queue:
             token = tgt_dict.string([index])
@@ -286,21 +302,6 @@ class FairseqSimulSTAgent(SpeechAgent):
                     return string_to_return
             else:
                 segment += [token.replace(BOW_PREFIX, "")]
-
-        if (
-            len(unit_queue) > 0
-            and tgt_dict.eos() == unit_queue[-1]
-            or len(states.units.target) > self.max_len
-        ):
-            # tokens = [tgt_dict.string([unit]) for unit in unit_queue]
-            # return ["".join(tokens).replace(BOW_PREFIX, "")] + [DEFAULT_EOS]
-            hyp = tgt_dict.string(
-                unit_queue,
-                "sentencepiece",
-            )
-            if self.pre_tokenizer is not None:
-                hyp = self.pre_tokenizer.decode(hyp)
-            return [hyp] + [DEFAULT_EOS]
 
         return None
 
@@ -329,9 +330,9 @@ class FairseqSimulSTAgent(SpeechAgent):
         """
         if not getattr(states, "encoder_states", None):
             return READ_ACTION
-        
+
         waitk = self.args.test_waitk
-        src_len = states.encoder_states["encoder_out"][0].size(0) // self.pre_decision_ratio
+        src_len = math.ceil(states.encoder_states["encoder_out"][0].size(0) // self.pre_decision_ratio)
         tgt_len = len(states.units.target)
 
         if src_len - tgt_len < waitk and not states.finish_read():
@@ -339,6 +340,7 @@ class FairseqSimulSTAgent(SpeechAgent):
             return READ_ACTION
         else:
             # logger.info(f"Write, src_len: {src_len} tgt_len: {tgt_len}")
+            # pdb.set_trace()
 
             tgt_indices = self.to_device(
                 torch.LongTensor(
@@ -381,6 +383,5 @@ class FairseqSimulSTAgent(SpeechAgent):
             # (don't stop before finish reading), return a None
             # self.model.decoder.clear_cache(states.incremental_states)
             index = None
-            logger.info("Add none.")
 
         return index

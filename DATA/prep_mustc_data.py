@@ -49,7 +49,7 @@ class MUSTC(Dataset):
     utterance_id
     """
 
-    SPLITS = ["train", "dev", "tst-COMMON"] #, "tst-HE"]
+    SPLITS = ["train", "dev", "tst-COMMON"]  # , "tst-HE"]
     LANGUAGES = ["de", "es", "fr", "it", "nl", "pt", "ro", "ru", "zh"]
 
     def __init__(self, root: str, lang: str, split: str) -> None:
@@ -103,47 +103,9 @@ class MUSTC(Dataset):
     def __len__(self) -> int:
         return len(self.data)
 
-class TextProcessor:
-    def __init__(self, tgt_lang):
-        self.src_norm = MosesPunctNormalizer(
-            lang='en', 
-            penn=False, 
-            norm_quote_commas=True, 
-            norm_numbers=True, 
-            pre_replace_unicode_punct=True, 
-            post_remove_control_chars=True
-        )
-        # self.src_tok = MosesTokenizer(lang='en')
-        self.punc_trans = str.maketrans(string.punctuation, ' '*len(string.punctuation)) #map punctuation to space
-        self.src_punc = lambda x: x.translate(self.punc_trans)
-
-        self.tgt_norm = MosesPunctNormalizer(
-            lang=tgt_lang, 
-            penn=False, 
-            norm_quote_commas=True, 
-            norm_numbers=True, 
-            pre_replace_unicode_punct=True, 
-            post_remove_control_chars=True
-        )
-        # self.tgt_tok = MosesTokenizer(lang=tgt_lang)
-
-    def __call__(self, src, tgt):
-        # preprocess english
-        src = self.src_norm.normalize(src)
-        src = self.src_punc(src.lower())
-        # src = self.src_tok.tokenize(src, escape=False)
-        # src = " ".join(src)
-
-        # preprocess target
-        tgt = self.tgt_norm.normalize(tgt)
-        # tgt = self.tgt_tok.tokenize(tgt, escape=False)
-        # tgt = " ".join(tgt)
-        return src, tgt
-
-
 def process(args):
     root = Path(args.data_root).absolute()
-    for lang in args.langs: #MUSTC.LANGUAGES:
+    for lang in args.langs:
         cur_root = root / f"en-{lang}"
         if not cur_root.is_dir():
             print(f"{cur_root.as_posix()} does not exist. Skipped.")
@@ -187,7 +149,7 @@ def process(args):
         zip_manifest = get_zip_manifest(zip_path)
         # Generate TSV manifest
         print("Generating manifest...")
-        prep_text = TextProcessor(lang)
+
         train_text = []
         for split in MUSTC.SPLITS:
             is_train_split = split.startswith("train")
@@ -198,7 +160,7 @@ def process(args):
                 manifest["audio"].append(zip_manifest[utt_id])
                 duration_ms = int(wav.size(1) / sr * 1000)
                 manifest["n_frames"].append(int(1 + (duration_ms - 25) / 10))
-                src_utt, tgt_utt = prep_text(src_utt, tgt_utt)
+
                 manifest["src_text"].append(src_utt)
                 manifest["tgt_text"].append(tgt_utt)
                 manifest["speaker"].append(speaker_id)
@@ -242,47 +204,6 @@ def process(args):
         # Clean up
         shutil.rmtree(feature_root)
 
-
-def process_joint(args):
-    cur_root = Path(args.data_root)
-    assert all((cur_root / f"en-{lang}").is_dir() for lang in MUSTC.LANGUAGES), \
-        "do not have downloaded data available for all 8 languages"
-    # Generate vocab
-    vocab_size_str = "" if args.vocab_type == "char" else str(args.vocab_size)
-    spm_filename_prefix = f"spm_{args.vocab_type}{vocab_size_str}_{args.task}"
-    with NamedTemporaryFile(mode="w") as f:
-        for lang in MUSTC.LANGUAGES:
-            tsv_path = cur_root / f"en-{lang}" / f"train_{args.task}.tsv"
-            df = load_df_from_tsv(tsv_path)
-            for t in df["tgt_text"]:
-                f.write(t + "\n")
-        special_symbols = None
-        if args.task == 'st':
-            special_symbols = [f'<lang:{lang}>' for lang in MUSTC.LANGUAGES]
-        gen_vocab(
-            Path(f.name),
-            cur_root / spm_filename_prefix,
-            args.vocab_type,
-            args.vocab_size,
-            special_symbols=special_symbols
-        )
-    # Generate config YAML
-    gen_config_yaml(
-        cur_root,
-        spm_filename_prefix + ".model",
-        yaml_filename=f"config_{args.task}.yaml",
-        specaugment_policy="ld",
-        # prepend_tgt_lang_tag=(args.task == "st"),
-    )
-    # Make symbolic links to manifests
-    for lang in MUSTC.LANGUAGES:
-        for split in MUSTC.SPLITS:
-            src_path = cur_root / f"en-{lang}" / f"{split}_{args.task}.tsv"
-            desc_path = cur_root / f"{split}_{lang}_{args.task}.tsv"
-            if not desc_path.is_symlink():
-                os.symlink(src_path, desc_path)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", "-d", required=True, type=str)
@@ -296,25 +217,20 @@ def main():
     parser.add_argument("--vocab-size", default=8000, type=int)
     parser.add_argument("--task", type=str, default="st", choices=["asr", "st"])
     parser.add_argument("--langs", type=str, default=",".join(MUSTC.LANGUAGES))
-    parser.add_argument("--joint", action="store_true", help="")
     parser.add_argument("--cmvn-type", default="utterance",
                         choices=["global", "utterance"],
                         help="The type of cepstral mean and variance normalization")
     parser.add_argument("--gcmvn-max-num", default=150000, type=int,
-                        help=(
-                            "Maximum number of sentences to use to estimate"
-                            "global mean and variance"
-                            ))
+                        help="Maximum number of sentences to use to estimate"
+                             "global mean and variance")
     parser.add_argument("--manifest-only", action="store_true", help="only preprocess manifest. "
-                        "works only when zip is already present")
+                        "works only when zip is already present"
+                        )
     args = parser.parse_args()
 
     args.langs = args.langs.split(',')
-    
-    if args.joint:
-        process_joint(args)
-    else:
-        process(args)
+
+    process(args)
 
 
 if __name__ == "__main__":

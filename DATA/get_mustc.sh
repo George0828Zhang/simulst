@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 SRC=en
-TGT=de
+TGT=es
 DATA_ROOT=/media/george/Data/mustc
 vocab=8000
 vtype=unigram
@@ -22,5 +22,5 @@ else
   echo "processing ${DATA_ROOT}/${SRC}-${TGT}"
   python prep_mustc_data.py \
     --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-    --langs $TGT
+    --langs $TGT --cmvn-type global
 fi

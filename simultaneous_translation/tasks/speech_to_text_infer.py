@@ -61,7 +61,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         method. """
         waitk = getattr(models[0], "waitk", None)
         test_waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
-        if test_waitk is not None:
+        if test_waitk is not None and test_waitk != waitk:
             # test override.
             logger.warning(f"Train test mismatch: training wait-{waitk}, while testing wait-{test_waitk}.")
             waitk = test_waitk

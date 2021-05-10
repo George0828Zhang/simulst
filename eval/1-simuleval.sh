@@ -7,9 +7,9 @@ EXP=../exp
 . ${EXP}/data_path.sh
 CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
-AVG=false
+AVG=true
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 if [[ $AVG == "true" ]]; then
   CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
@@ -33,5 +33,5 @@ simuleval \
   --model-path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
   --output ${OUTPUT} \
   --scores \
-  --force-finish \
-  --test-waitk 1024
+  --gpu \
+  --test-waitk 9
