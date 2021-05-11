@@ -6,21 +6,21 @@ export CUDA_VISIBLE_DEVICES=0
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     -s ${SRC} -t ${TGT} \
-    --max-tokens 8000 \
-    --update-freq 2 \
+    --max-tokens 16000 \
+    --update-freq 1 \
     --task translation \
     --arch transformer \
     --encoder-embed-dim 256 --decoder-embed-dim 256 \
     --encoder-ffn-embed-dim 2048 --decoder-ffn-embed-dim 2048 \
     --encoder-attention-heads 4 --decoder-attention-heads 4 \
     --encoder-normalize-before --decoder-normalize-before \
-    --share-all-embeddings \
+    --share-decoder-input-output-embeddings \
     --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
     --clip-norm 10.0 \
     --weight-decay 0.0001 \
     --optimizer adam --lr 0.0005 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 \
-    --max-update 100000 \
+    --max-update 50000 \
     --eval-bleu \
     --eval-bleu-args '{"beam": 4, "max_len_a": 1.2, "max_len_b": 10}' \
     --eval-bleu-remove-bpe sentencepiece \
@@ -34,7 +34,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --keep-interval-updates 5 \
     --keep-best-checkpoints 5 \
     --patience 50 \
-    --log-format simple --log-interval 10 \
-    --num-workers 4 \
+    --log-format simple --log-interval 50 \
+    --num-workers 8 \
     --seed 1 \
     --fp16
