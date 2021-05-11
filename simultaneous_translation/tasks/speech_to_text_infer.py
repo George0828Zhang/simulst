@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import torch
 import numpy as np
 from fairseq import metrics, utils
 from fairseq.tasks import register_task, LegacyFairseqTask
@@ -56,8 +57,8 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         seq_gen_cls=None,
         extra_gen_cls_kwargs=None,
     ):
-        """ speech_to_text ignores seq_gen_cls and overrides 
-        extra_gen_cls_kwargs. So we will call LegacyFairseqTask's 
+        """ speech_to_text ignores seq_gen_cls and overrides
+        extra_gen_cls_kwargs. So we will call LegacyFairseqTask's
         method. """
         waitk = getattr(models[0], "waitk", None)
         test_waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
@@ -97,6 +98,21 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             logging_output.update(_metrics["wer"])
         return loss, sample_size, logging_output
 
+    def inference_step(
+        self, generator, models, sample, prefix_tokens=None, constraints=None
+    ):
+        with torch.no_grad():
+            if getattr(models[0], "one_pass_decoding", False):
+                # one-pass decoding
+                if hasattr(self, 'blank_symbol'):
+                    sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
+                return models[0].generate(**sample["net_input"])
+            else:
+                # incremental decoding
+                return generator.generate(
+                    models, sample, prefix_tokens=prefix_tokens, constraints=constraints
+                )
+
     def _inference_with_metrics(self, generator, sample, model):
         import sacrebleu
         import editdistance
@@ -117,11 +133,8 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             return s if s else "UNKNOWNTOKENINHYP"
 
         gen_out = self.inference_step(generator, [model], sample, prefix_tokens=None)
-        ctxs, hyps, refs = [], [], []
+        hyps, refs = [], []
         for i in range(len(gen_out)):
-            ctxs.append(
-                gen_out[i][0]["context"]
-            )
             hyps.append(
                 decode(gen_out[i][0]["tokens"])
             )
@@ -132,8 +145,6 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
                 )
             )
         if self.inference_cfg.print_samples:
-            # if len(ctxs) > 0:
-            #     logger.info("example context: " + ctxs[0])
             logger.info("example hypothesis: " + hyps[0])
             logger.info("example reference: " + refs[0])
 

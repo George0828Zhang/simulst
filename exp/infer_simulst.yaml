@@ -2,7 +2,6 @@ eval_wer: false
 eval_bleu: true
 generation_args:
   beam: 1 # for simultaneous, don't use beam search
-  waitk: 9
 post_process: sentencepiece
 print_samples: true
 eval_bleu_args:

@@ -1,2 +1,3 @@
 from .waitk_transformer_layers import WaitkTransformerDecoderLayer, CausalTransformerEncoderLayer
 from .causal_conv_subsampler import CausalConv1dSubsampler
+from .sinkhorn_attention import SinkhornAttention
