@@ -14,7 +14,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --encoder-ffn-embed-dim 2048 --decoder-ffn-embed-dim 2048 \
     --encoder-attention-heads 4 --decoder-attention-heads 4 \
     --encoder-normalize-before --decoder-normalize-before \
-    --share-decoder-input-output-embeddings \
+    --share-decoder-input-output-embed \
     --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
     --clip-norm 10.0 \
     --weight-decay 0.0001 \
