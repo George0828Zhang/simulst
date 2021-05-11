@@ -107,6 +107,10 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
             decoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=decoder, checkpoint=args.load_pretrained_decoder_from
             )
+            logger.info(
+                f"loaded pretrained decoder from: "
+                f"{args.load_pretrained_decoder_from}"
+            )
         return decoder
 
     def forward_embeddings(self, tokens):

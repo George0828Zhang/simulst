@@ -22,7 +22,7 @@ This section introduces the data preparation for training and evaluation. Follow
 1. [Download](https://ict.fbk.eu/must-c/) and unpack the package.
 ```bash
 cd ${DATA_ROOT}
-tar -zxvf MUSTC_v1.0_en-de.tar.gz
+tar -zxvf MUSTC_v1.0_en-es.tar.gz
 ```
 2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the path of speech data (the directory of previous step).
 3. Preprocess data with
@@ -30,12 +30,12 @@ tar -zxvf MUSTC_v1.0_en-de.tar.gz
 cd DATA
 bash get_mustc.sh
 ```
-The output manifest files should appear under `${DATA_ROOT}/en-de/`. 
+The output manifest files should appear under `${DATA_ROOT}/en-es/`. 
 
 Configure environment and path in `exp/data_path.sh` before training:
 ```bash
 export SRC=en
-export TGT=de
+export TGT=es
 export DATA=/media/george/Data/mustc/${SRC}-${TGT}
 
 FAIRSEQ=`realpath ../fairseq`
@@ -70,29 +70,43 @@ python ../scripts/average_checkpoints.py \
 ```
 To distill the training set, run 
 ```bash
-bash 0a-decode-distill.sh # generate prediction at ./distilled/train_st.tsv
-bash 0b-create-distill-tsv.sh # generate distillation data at ${DATA_ROOT}/distill_${lang}.tsv
+bash 0a-decode-distill.sh # generate prediction at ./distilled/generate-test.txt
+bash 0b-create-distill-tsv.sh # generate distillation data at ${DATA_ROOT}/distill_st.tsv from prediction
 ```
+
+### Pretrained models & distillation dataset
+|en-es|en-de|
+|-|-|
+|[distill_st.tsv](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215986&authkey=ALrO9wKxQZm2rM8)|distill_st.tsv|
+|[model](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215985&authkey=AK3Vpa-_G53hDN8)|model|
+|[data-bin](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215984&authkey=AMV_Y3WP9cCBfDA)|data-bin|
 
 ## ASR Pretraining
 We also need an offline ASR model to initialize our ST models. Note that the encoder of this model should be causal.
 ```bash
 bash 1-offline_asr.sh # autoregressive ASR
 ```
-A pretrained ASR for `s2t_transformer_s` can be downloaded [here](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215970&authkey=AArXboES4OmbqAc)
+
+### Pretrained models
+|arch|en-es|en-de|
+|:-:|-|-|
+|s2t_transformer_s|||
 
 
 ## Vanilla wait-k
 We can now train vanilla wait-k ST model as a baseline. To do this, run
-<!-- > **_NOTE:_**  to train with the distillation set, set `dataset.train_subset` to `distill_${lang}` in the script. -->
+> **_NOTE:_**  to train with the distillation set, set `--train-subset` to `distill_st` in the script.
 ```bash
 bash 2-vanilla_wait_k.sh
 ```
 ### Pretrained models
 |DATA|arch|en-es|en-de|
 |-|-|-|-|
-|wait-1||||
-|wait-9||||
+||wait-1||||
+||wait-3||||
+||wait-5||||
+||wait-7||||
+||wait-9||||
 
 
 ## Offline Evaluation (BLEU only)
