@@ -6,6 +6,7 @@ OUT=${DATA}/distill_st.tsv
 
 # grep -E "D-[0-9]+" ${DECODED} | head
 python ../DATA/create_distillation_tsv.py \
+    --moses-detok ${TGT} \
     --train-file ${TRAIN} \
     --distill-file ${DECODED} \
     --out-file ${OUT}
