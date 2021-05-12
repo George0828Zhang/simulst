@@ -90,9 +90,10 @@ bash 1-offline_asr.sh # autoregressive ASR
 ### Pretrained models
 |arch/file|en-es|en-de|
 |:-:|-|-|
-|s2t_transformer_s|[model](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215989&authkey=AOq8OeN1_SGqDE4)||
-|gcmvn|[link](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215991&authkey=AKAFZwAfApr0Pfc)||
-|spm|[link](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215990&authkey=AAqzjqh5R5i1HkA)||
+|s2t_transformer_s|[12.71](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215989&authkey=AOq8OeN1_SGqDE4)||
+|gcmvn|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215991&authkey=AKAFZwAfApr0Pfc)|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215996&authkey=AB5W324zuNet3-4)|
+|spm|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215990&authkey=AAqzjqh5R5i1HkA)|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215995&authkey=AJHMuGnCyQ9W5zY)|
+
 
 ## Vanilla wait-k
 We can now train vanilla wait-k ST model as a baseline. To do this, run

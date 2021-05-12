@@ -122,7 +122,7 @@ class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
                 x = model.decoder.forward_fc(encoder_states)
                 logits = model.output_layer(x.permute(1, 0, 2))
                 y_pred = logits.argmax(-1)
-                recall, precision = calc_recall_precision(sample["target"], y_pred)
+                recall, precision = calc_recall_precision(y_pred, sample["target"])
                 blank_rate = y_pred.eq(self.blank_idx).float().mean()
         else:
             recall = 0
