@@ -88,10 +88,11 @@ bash 1-offline_asr.sh # autoregressive ASR
 ```
 
 ### Pretrained models
-|arch|en-es|en-de|
+|arch/file|en-es|en-de|
 |:-:|-|-|
-|s2t_transformer_s|||
-
+|s2t_transformer_s|[model](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215989&authkey=AOq8OeN1_SGqDE4)||
+|gcmvn|[link](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215991&authkey=AKAFZwAfApr0Pfc)||
+|spm|[link](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215990&authkey=AAqzjqh5R5i1HkA)||
 
 ## Vanilla wait-k
 We can now train vanilla wait-k ST model as a baseline. To do this, run
@@ -100,6 +101,7 @@ We can now train vanilla wait-k ST model as a baseline. To do this, run
 bash 2-vanilla_wait_k.sh
 ```
 ### Pretrained models
+The gcmvn and spm share the same files with corresponding poretrained asr.
 |DATA|arch|en-es|en-de|
 |-|-|-|-|
 ||wait-1||||

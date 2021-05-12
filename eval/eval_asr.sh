@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=fb_offline_asr
+TASK=offline_asr
 SPLIT=dev #tst-COMMON
 EXP=../exp
 . ${EXP}/data_path.sh
@@ -21,9 +21,9 @@ else
   CHECKPOINT_FILENAME=checkpoint_best.pt
 fi
 
-python -m fairseq_cli.generate ${DATA} --user-dir .. \
+python -m fairseq_cli.generate ${DATA} --user-dir ${USERDIR} \
   --config-yaml ${CONF} --gen-subset ${SPLIT}_asr \
   --task speech_to_text \
-  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 80000 \
+  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 \
   --model-overrides '{"load_pretrained_encoder_from": None}' \
   ${GENARGS} ${EXTRAARGS}

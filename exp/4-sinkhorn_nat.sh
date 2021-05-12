@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=sinkhorn_nat
+TASK=sinkhorn_nat3_kd
 . ./data_path.sh
 ASR_MODEL=./checkpoints/fb_offline_asr/avg_best_5_checkpoint.pt
 
@@ -7,14 +7,14 @@ export CUDA_VISIBLE_DEVICES=0
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${ASR_MODEL} \
-    --config-yaml config_st.yaml --train-subset train_st --valid-subset dev_st \
+    --config-yaml config_st.yaml --train-subset train_distill --valid-subset dev_st \
     --max-tokens 20000 \
     --update-freq 8 \
     --task speech_to_text_infer  \
     --inference-config-yaml infer_simulst.yaml \
     --arch sinkhorn_nat_s \
-    --sinkhorn-iters 8 --sinkhorn-tau 0.75 \
-    --criterion label_smoothed_ctc --label-smoothing 0.1 \
+    --sinkhorn-iters 8 --sinkhorn-tau 0.75 --sinkhorn-bucket-size 7 --sinkhorn-energy dot \
+    --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
     --clip-norm 10.0 \
     --optimizer adam --lr 1e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
