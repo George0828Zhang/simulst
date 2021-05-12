@@ -34,7 +34,7 @@ from simultaneous_translation.models.nat_generate import generate
 from simultaneous_translation.models.waitk_s2t_transformer import (
     S2TCausalEncoder,
 )
-from simultaneous_translation.modules import SinkhornAttention
+from simultaneous_translation.modules import SinkhornTransformerDecoderLayer
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,23 @@ class S2TSinkhornNATransformerModel(S2TTransformerModel):
             required=True,
             help=(
                 'iters of sinkhorn normalization to perform.'
+            ),
+        )
+        parser.add_argument(
+            "--sinkhorn-bucket-size",
+            type=int,
+            required=True,
+            help=(
+                'number of elements to group before performing sinkhorn sorting.'
+            ),
+        )
+        parser.add_argument(
+            "--sinkhorn-energy",
+            type=str,
+            required=True,
+            choices=["dot", "cos", "L2"],
+            help=(
+                'type of energy function to use to calculate attention. available: dot, cos, L2'
             ),
         )
 
@@ -128,12 +145,14 @@ class S2TSinkhornNATransformerModel(S2TTransformerModel):
         extra["encoder_out"] = encoder_out
         return logits, extra
 
-    def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=True, **unused):
+    def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
         if not from_encoder:
             return generate(self, src_tokens, src_lengths, blank_idx=blank_idx)
         _logits, extra = self.forward(src_tokens, src_lengths, None)
         encoder_out = extra["encoder_out"]
         encoder_states = encoder_out["encoder_out"][0]
+        # when decoding with encoder out, need to match decoder
+        encoder_states = self.decoder.forward_fc(encoder_states)
         encoder_states = encoder_states.permute(1, 0, 2)  # (N, S, E)
         logits = self.output_layer(
             encoder_states
@@ -149,59 +168,13 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
         args,
         dictionary,
         embed_tokens,
-        # no_encoder_attn=False,
-        output_projection=None,
     ):
-        super().__init__(args, dictionary, embed_tokens, no_encoder_attn=True, output_projection=output_projection)
-
-        self.sinkhorn_attn = SinkhornAttention(
-            self.embed_dim,
-            # num_heads,
-            kdim=getattr(args, "encoder_embed_dim", None),
-            vdim=getattr(args, "encoder_embed_dim", None),
-            dropout=0,  # args.attention_dropout,
-            sinkhorn_tau=args.sinkhorn_tau,
-            sinkhorn_iters=args.sinkhorn_iters,
+        super().__init__(args, dictionary, embed_tokens)
+        self.layers = nn.ModuleList([])
+        self.layers.extend(
+            [SinkhornTransformerDecoderLayer(args) for i in range(args.decoder_layers - 1)] +
+            [SinkhornTransformerDecoderLayer(args, no_fc=True)]
         )
-
-    def forward(
-        self,
-        prev_output_tokens,
-        encoder_out: Optional[Dict[str, List[Tensor]]] = None,
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        features_only: bool = False,
-        full_context_alignment: bool = False,
-        alignment_layer: Optional[int] = None,
-        alignment_heads: Optional[int] = None,
-        src_lengths: Optional[Any] = None,
-        return_all_hiddens: bool = False,
-    ):
-        """
-        Args:
-            prev_output_tokens (LongTensor): previous decoder outputs of shape
-                `(batch, tgt_len)`, for teacher forcing
-            encoder_out (optional): output from the encoder, used for
-                encoder-side attention, should be of size T x B x C
-            incremental_state (dict): dictionary used for storing state during
-                :ref:`Incremental decoding`
-            features_only (bool, optional): only return features without
-                applying output layer (default: False).
-            full_context_alignment (bool, optional): don't apply
-                auto-regressive mask to self-attention (default: False).
-        Returns:
-            tuple:
-                - the decoder's output of shape `(batch, tgt_len, vocab)`
-                - a dictionary with any model-specific outputs
-        """
-
-        x, extra = self.extract_features(
-            prev_output_tokens,
-            encoder_out=encoder_out,
-        )
-
-        if not features_only:
-            x = self.output_layer(x)
-        return x, extra
 
     def extract_features(
         self,
@@ -220,18 +193,25 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
         encoder_states = x
         encoder_padding_mask = decoder_padding_mask
 
+        # position
+        T, N, E = x.size()
+        positions = self.embed_positions(x.new_empty(N, T, dtype=torch.long))
+        x = self.embed_scale * x + positions.transpose(0, 1)
+        x = self.dropout_module(x)
+
         # T x B x C
         attn: Optional[Tensor] = None
+        log_alpha: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
         self_attn_mask = None
 
         # decoder layers
         for i, layer in enumerate(self.layers):
 
-            x, attn, _ = layer(
+            x, attn, log_alpha = layer(
                 x,
-                None,
-                None,
+                encoder_states,
+                encoder_padding_mask,
                 self_attn_mask=self_attn_mask,
                 self_attn_padding_mask=decoder_padding_mask,
             )
@@ -240,20 +220,16 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
         if self.layer_norm is not None:
             x = self.layer_norm(x)
 
-        x, attn, log_alpha = self.sinkhorn_attn(
-            query=x,
-            key=encoder_states,
-            value=encoder_states,
-            key_padding_mask=encoder_padding_mask,
-        )
-
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
-        if self.project_out_dim is not None:
-            x = self.project_out_dim(x)
-
         return x, {"attn": [attn], "log_alpha": [log_alpha]}  # , "inner_states": inner_states,}
+
+    def forward_fc(self, x):
+        """ when decoding with encoder out, and training is with fc,
+        need to do fc on states before prediction.
+        """        
+        return self.layers[-1].forward_fc(x)
 
 @register_model_architecture(
     "sinkhorn_nat", "sinkhorn_nat_s"

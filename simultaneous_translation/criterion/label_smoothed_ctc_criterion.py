@@ -23,6 +23,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def calc_recall_precision(predict, target, pad_idx=1, eps=1e-8):
+    N, S = predict.size()
+    N, T = target.size()
+
+    uniq, inverse = torch.unique(
+        torch.cat((predict, target), dim=1),
+        return_inverse=True,
+    )
+    src = target.new_ones(1)
+
+    def collect(tokens):
+        return tokens.new_zeros(
+            (N, uniq.size(-1))
+        ).scatter_add_(1, tokens, src.expand_as(tokens))
+
+    pred_words = collect(inverse[:, :S])
+    target_words = collect(inverse[:, S:])
+
+    match = torch.min(target_words, pred_words).sum(-1)
+    recall = match / (target.ne(pad_idx).sum(-1) + eps)
+    precision = match / (predict.ne(pad_idx).sum(-1) + eps)
+    return recall.sum(), precision.sum()
 
 @dataclass
 class LabelSmoothedCTCCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
@@ -70,22 +92,42 @@ class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
             loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
         if self.report_sinkhorn_dist:
-            attn = net_output[1]["attn"][0].float()
-            cost = -net_output[1]["log_alpha"][0].float()
+            attn = net_output[1]["attn"][0].float().data
+            cost = -net_output[1]["log_alpha"][0].float().data
+            denom = attn.size(-1)
+
             with torch.no_grad():
                 # compute sinkhorn distance
-                dist = (cost * attn).mean(-1).sum().data
+                dist = (cost * attn).sum() / denom
 
                 # compute inversion rate
                 # expected value of position in source that aligns to each target
                 alignment = (utils.new_arange(attn) * attn).sum(-1)  # (N, L1)
                 inv_rate = alignment[:, 1:] < alignment[:, :-1]
-                inv_rate = inv_rate.float().mean(-1).sum().data
+                inv_rate = inv_rate.float().sum() / denom
 
-                attn = F.normalize(F.relu(attn), p=1.0, dim=-1)
-                entropy = Categorical(probs=attn).entropy().mean(-1).sum().data
+                try:
+                    attn = F.normalize(F.relu(attn) + 1e-8, p=1.0, dim=-1)
+                    entropy = Categorical(probs=attn).entropy().sum() / denom
+                except ValueError:
+                    entropy = 0
+
         else:
             dist = inv_rate = entropy = 0
+
+        if self.report_accuracy:
+            encoder_out = net_output[1]["encoder_out"]
+            encoder_states = encoder_out["encoder_out"][0]
+            with torch.no_grad():
+                x = model.decoder.forward_fc(encoder_states)
+                logits = model.output_layer(x.permute(1, 0, 2))
+                y_pred = logits.argmax(-1)
+                recall, precision = calc_recall_precision(sample["target"], y_pred)
+                blank_rate = y_pred.eq(self.blank_idx).float().mean()
+        else:
+            recall = 0
+            precision = 0
+            blank_rate = 0
 
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -98,7 +140,11 @@ class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
             "sample_size": sample_size,
             "sinkhorn_dist": dist,
             "inv_rate": inv_rate,
-            "matching_entropy": entropy
+            "matching_entropy": entropy,
+
+            "recall": recall,
+            "precision": precision,
+            "blank_rate": blank_rate,
         }
         return loss, sample_size, logging_output
 
@@ -171,6 +217,9 @@ class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
         sample_size = sum_logs("sample_size")
         nsentences = sum_logs("nsentences")
         matching_entropy = sum_logs("matching_entropy")
+        recall = sum_logs("recall")
+        precision = sum_logs("precision")
+        blank_rate = sum_logs("blank_rate")
 
         metrics.log_scalar(
             "inversion_rate", inv_rate / nsentences, nsentences, round=3
@@ -180,4 +229,14 @@ class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         metrics.log_scalar(
             "matching_entropy", matching_entropy / nsentences, nsentences, round=3
+        )
+
+        metrics.log_scalar(
+            "recall", recall / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "precision", precision / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "blank_rate", blank_rate, 1, round=3
         )
