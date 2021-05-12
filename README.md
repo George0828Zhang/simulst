@@ -77,7 +77,7 @@ bash 0b-create-distill-tsv.sh # generate distillation data at ${DATA_ROOT}/disti
 ### Pretrained models & distillation dataset
 |en-es|en-de|
 |-|-|
-|[distill_st.tsv](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215986&authkey=ALrO9wKxQZm2rM8)|distill_st.tsv|
+|[train_distill.tsv](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215986&authkey=ALrO9wKxQZm2rM8)|train_distill.tsv|
 |[model](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215985&authkey=AK3Vpa-_G53hDN8)|model|
 |[data-bin](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215984&authkey=AMV_Y3WP9cCBfDA)|data-bin|
 
