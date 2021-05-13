@@ -134,9 +134,19 @@ class SinkhornTransformerDecoderLayer(TransformerDecoderLayer):
         """ when decoding with encoder out, and training is with fc,
         need to do fc on states before prediction.
         """
+        if self.encoder_attn.out_proj is not None:
+            x = self.encoder_attn.out_proj(x)
+
+        if not self.normalize_before:
+            x = self.encoder_attn_layer_norm(x)
+
+        residual = x
+        if self.normalize_before:
+            x = self.final_layer_norm(x)
+
         if self.no_fc:
             return x
-        residual = x
+
         x = self.activation_fn(self.fc1(x))
         x = self.activation_dropout_module(x)
         x = self.fc2(x)
