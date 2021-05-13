@@ -33,6 +33,13 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             help="Configuration YAML filename for bleu or wer eval (under exp/)",
         )
 
+        parser.add_argument(
+            "--from-encoder", action="store_true",
+            help=(
+                'decode prediction from model.encoder.'
+            ),
+        )
+
     def __init__(self, args, tgt_dict):
         super().__init__(args, tgt_dict)
 
@@ -40,6 +47,8 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
         # for speech_to_text, bpe & tokenizer configs are in S2TDataCfg, so passing None is ok
         # bpe_tokenizer is handled by post_process.
         self.pre_tokenizer = self.build_tokenizer(None)
+
+        self.from_encoder = getattr(args, "from_encoder", False)
 
     def build_model(self, args):
         model = super().build_model(args)
@@ -106,6 +115,7 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
                 # one-pass decoding
                 if hasattr(self, 'blank_symbol'):
                     sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
+                sample["net_input"]["from_encoder"] = self.from_encoder
                 return models[0].generate(**sample["net_input"])
             else:
                 # incremental decoding
