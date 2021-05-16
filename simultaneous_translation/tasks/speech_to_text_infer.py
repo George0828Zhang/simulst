@@ -107,21 +107,21 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             logging_output.update(_metrics["wer"])
         return loss, sample_size, logging_output
 
+    @torch.no_grad()
     def inference_step(
         self, generator, models, sample, prefix_tokens=None, constraints=None
     ):
-        with torch.no_grad():
-            if getattr(models[0], "one_pass_decoding", False):
-                # one-pass decoding
-                if hasattr(self, 'blank_symbol'):
-                    sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
-                sample["net_input"]["from_encoder"] = self.from_encoder
-                return models[0].generate(**sample["net_input"])
-            else:
-                # incremental decoding
-                return generator.generate(
-                    models, sample, prefix_tokens=prefix_tokens, constraints=constraints
-                )
+        if getattr(models[0], "one_pass_decoding", False):
+            # one-pass decoding
+            if hasattr(self, 'blank_symbol'):
+                sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
+            sample["net_input"]["from_encoder"] = self.from_encoder
+            return models[0].generate(**sample["net_input"])
+        else:
+            # incremental decoding
+            return generator.generate(
+                models, sample, prefix_tokens=prefix_tokens, constraints=constraints
+            )
 
     def _inference_with_metrics(self, generator, sample, model):
         import sacrebleu

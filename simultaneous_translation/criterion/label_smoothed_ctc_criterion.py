@@ -57,14 +57,14 @@ class LabelSmoothedCTCCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
         metadata={"help": "zero inf loss when source length <= target length"},
     )
     report_sinkhorn_dist: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "print sinkhorn distance value."},
     )
 
 @register_criterion(
     "label_smoothed_ctc", dataclass=LabelSmoothedCTCCriterionConfig
 )
-class MultiTaskCriterion(LabelSmoothedCrossEntropyCriterion):
+class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
     def __init__(self, cfg, task):
         super().__init__(
             task,

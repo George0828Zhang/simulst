@@ -48,6 +48,7 @@ class SinkhornAttention(nn.Module):
         dropout=0.0,
         bias=True,
         add_bias_kv=False,
+        no_value_proj=False,
         no_out_proj=False,
         sinkhorn_tau=0.75,
         sinkhorn_iters=8,
@@ -66,6 +67,11 @@ class SinkhornAttention(nn.Module):
 
         self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        if no_value_proj:
+            self.v_proj = None
+        else:
+            self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
         if no_out_proj:
             self.out_proj = None
@@ -90,6 +96,8 @@ class SinkhornAttention(nn.Module):
         # the scaled initialization
         nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
         nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+        if self.v_proj is not None:
+            nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
 
         if self.out_proj is not None:
             nn.init.xavier_uniform_(self.out_proj.weight)
@@ -221,6 +229,9 @@ class SinkhornAttention(nn.Module):
         k = self.k_proj(key)
         v = value
 
+        if self.v_proj is not None:
+            v = self.v_proj(value)
+
         if self.bias_k is not None:
             assert self.bias_v is not None
             k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
@@ -237,10 +248,6 @@ class SinkhornAttention(nn.Module):
                     ],
                     dim=1,
                 )
-
-        # q = q.contiguous().transpose(0, 1)
-        # k = k.contiguous().transpose(0, 1)
-        # v = v.contiguous().transpose(0, 1)
 
         q = q.transpose(0, 1)
         k = k.transpose(0, 1)
