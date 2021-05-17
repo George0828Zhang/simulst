@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-ROOT=/media/george/Data/mustc/en-zh
-from=/livingrooms/george/mustc/en-zh
-to=/media/george/Data/mustc/en-zh
+ROOT=/media/george/Data/mustc/en-es
+from=/livingrooms/george/mustc/en-es
+to=/media/george/Data/mustc/en-es
 
 for f in `ls ${ROOT}/*.tsv ${ROOT}/*.yaml`; do
 	echo ${f}

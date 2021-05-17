@@ -51,6 +51,12 @@ class S2TSimpleNATransformerModel(S2TTransformerModel):
     def add_args(parser):
         """Add model-specific arguments to the parser."""
         super(S2TSimpleNATransformerModel, S2TSimpleNATransformerModel).add_args(parser)
+        parser.add_argument(
+            "--encoder-log-penalty", action="store_true",
+            help=(
+                'add logrithmic distance penalty in speech encoder.'
+            ),
+        )
 
     @classmethod
     def build_encoder(cls, args):
@@ -164,3 +170,4 @@ class NATransformerDecoder(TransformerDecoder):
 def simple_nat_s(args):
     s2t_transformer_s(args)
     args.share_decoder_input_output_embed = True  # force embed sharing
+    args.encoder_log_penalty = True  # force log penalty

@@ -57,6 +57,12 @@ class S2TSinkhornNATransformerModel(S2TTransformerModel):
             metavar="STR",
             help="model to take decoder weights from (for initialization)",
         )
+        parser.add_argument(
+            "--encoder-log-penalty", action="store_true",
+            help=(
+                'add logrithmic distance penalty in speech encoder.'
+            ),
+        )
         parser.add_argument('--sinkhorn-tau', type=float, required=True,
                             help='temperature for gumbel sinkhorn.')
         parser.add_argument(
@@ -227,3 +233,4 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
 def sinkhorn_nat_s(args):
     s2t_transformer_s(args)
     args.share_decoder_input_output_embed = True  # force embed sharing
+    args.encoder_log_penalty = True  # force log penalty

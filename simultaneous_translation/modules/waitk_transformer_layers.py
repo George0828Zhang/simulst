@@ -27,6 +27,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
     def __init__(self, args):
         super().__init__(args)
         self._future_mask = torch.empty(0)
+        self.log_penalty = args.encoder_log_penalty
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
@@ -39,6 +40,12 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
             self._future_mask = torch.triu(
                 utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
             )
+            if self.log_penalty:
+                penalty = torch.arange(dim, dtype=tensor.dtype)
+                penalty = torch.abs(
+                    penalty.unsqueeze(1) - penalty
+                ).clamp(min=1)
+                self._future_mask -= penalty.log()
         self._future_mask = self._future_mask.to(tensor)
         return self._future_mask[:dim, :dim]
 

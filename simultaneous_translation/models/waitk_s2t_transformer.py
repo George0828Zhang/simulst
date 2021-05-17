@@ -84,6 +84,12 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
                 "simultaneous decision making process."
             ),
         )
+        parser.add_argument(
+            "--encoder-log-penalty", action="store_true",
+            help=(
+                'add logrithmic distance penalty in speech encoder.'
+            ),
+        )
 
     @classmethod
     def build_encoder(cls, args):
@@ -361,6 +367,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 )
 def waitk_s2t_transformer_s(args):
     s2t_transformer_s(args)
-    args.waitk = getattr(args, 'waitk', 1024)  # default is wait-until-end
+    args.waitk = getattr(args, 'waitk', 60000)  # default is wait-until-end
     args.encoder_freezing_updates = 0  # disable this feature.
     args.share_decoder_input_output_embed = True  # force embed sharing
+    args.encoder_log_penalty = True  # force log penalty
