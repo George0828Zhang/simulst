@@ -41,7 +41,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
                 utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
             )
             if self.log_penalty:
-                penalty = torch.arange(dim, dtype=tensor.dtype)
+                penalty = torch.arange(dim).type_as(self._future_mask)
                 penalty = torch.abs(
                     penalty.unsqueeze(1) - penalty
                 ).clamp(min=1)
