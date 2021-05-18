@@ -83,11 +83,15 @@ class LabelSmoothedCrossEntropySinkhornCriterionConfig(LabelSmoothedCrossEntropy
         metadata={"help": "stop gradient of auxiliary loss flowing through decoder hidden states / embeddings."},
     )
     sinkhorn_temperature: Optional[float] = field(
-        default=0.7,
+        default=0.75,
         metadata={"help": "temperature for gumbel sinkorn. the higher, the sparser the output permutation."},
     )
     sinkhorn_iters: Optional[int] = field(
-        default=20,
+        default=8,
+        metadata={"help": "number of iterations for sinkhorn normalization."},
+    )
+    sinkhorn_bucket_size: Optional[int] = field(
+        default=7,
         metadata={"help": "number of iterations for sinkhorn normalization."},
     )
 
@@ -108,6 +112,7 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         self.stop_grad_embeddings = cfg.stop_grad_embeddings
         self.sinkhorn_temperature = cfg.sinkhorn_temperature
         self.sinkhorn_iters = cfg.sinkhorn_iters
+        self.sinkhorn_bucket_size = cfg.sinkhorn_bucket_size
 
         if cfg.cost_fn == "cos":
             self.cost_fn = cos_dist
@@ -118,6 +123,8 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         else:
             raise NotImplementedError(f"auxiliary loss {cfg.cost_fn} not found.")
 
+        self.log_penalty_mask = torch.empty(0)
+
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
         1. Forward Encoder to get causal speech states
@@ -125,19 +132,18 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         3. reorder targets based on reorder matrix
         4. compute wait-k teacher forcing on decoder.
         """
-        
-        encoder_out = self.model.forward_encoder(sample["net_input"])
+        src_tokens = sample["net_input"]["src_tokens"]
+        src_lengths = sample["net_input"]["src_lengths"]
+        encoder_out = model.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
 
         sink_dist, attn, extras = self.compute_sinkhorn_distance(model, encoder_out, sample)
 
         # replace and return as well
         prev_tokens, tgt_tokens = self.reorder_tokens(attn, sample)
 
-        assert (prev_tokens == sample["net_input"]["prev_output_tokens"]).all()
-
-        net_output = self.model.forward_decoder(
-            sample["net_input"]["prev_output_tokens"],
-            encoder_out,
+        net_output = model.decoder(
+            prev_output_tokens=prev_tokens,
+            encoder_out=encoder_out,
         )
         loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
@@ -162,6 +168,8 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
                 attn (N, T, S)
                 prev_output_tokens (N, T)
                 target_tokens (N, T)
+
+            This function assumes torch.sort is stable sorting... wouldnt work otherwise.
         """
         prev_tokens, target = sample["net_input"]["prev_output_tokens"], sample["target"]
 
@@ -170,13 +178,30 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
             sort_key.masked_fill_(tokens.eq(self.pad_idx), 1e6)  # will sort to last
             sort_key.masked_fill_(tokens.eq(self.eos_idx), -1 if eos_begin else 1e6)  # will sort to first or last
 
-            sort_ord = sort_key.argsort(sort_key, dim=-1)
-            return tokens.index_select(1, sort_ord)
+            sort_ord = sort_key.argsort(dim=1)
+            return torch.gather(tokens, dim=1, index=sort_ord)
 
+        # reduce memory footprint.
         sample["net_input"]["prev_output_tokens"] = reorder_fn(prev_tokens, eos_begin=True)
         sample["target"] = reorder_fn(target)
 
-        return sample["net_input"]["prev_output_tokens"], sample["target"]        
+        return sample["net_input"]["prev_output_tokens"], sample["target"]
+
+    def buffered_log_penalty(self, tensor):
+        dim = tensor.size(1)  # batch first
+        # self.log_penalty_mask.device != tensor.device is not working in TorchScript. This is a workaround.
+        if (
+            self.log_penalty_mask.size(0) == 0
+            or (not self.log_penalty_mask.device == tensor.device)
+            or self.log_penalty_mask.size(0) < dim
+        ):
+            penalty = torch.arange(dim, dtype=torch.float)
+            penalty = torch.abs(
+                penalty.unsqueeze(1) - penalty
+            ).clamp(min=1)
+            self.log_penalty_mask = penalty.log()
+        self.log_penalty_mask = self.log_penalty_mask.to(tensor)
+        return self.log_penalty_mask[:dim, :dim]
 
     def compute_sinkhorn_distance(self, model, encoder_out, sample):
         """ """
@@ -188,40 +213,44 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         q = model.forward_embeddings(target)  # need gradients!
 
         # masks
-        key_padding_mask = encoder_out["padding_mask"]
+        key_padding_mask = encoder_out["encoder_padding_mask"][0] \
+            if len(encoder_out["encoder_padding_mask"]) > 0 else None
         query_padding_mask = target.eq(self.pad_idx) | target.eq(self.eos_idx)
 
         # S = S // bucket_size; T = S
         k, key_padding_mask, _ = self.pad_to_multiple(
             k, key_padding_mask)
-        q, k, query_padding_mask, key_padding_mask, n_dummy = self.aggregate_buckets(
+        q, k, qk_padding_mask, n_query_padding = self.aggregate_buckets(
             q, k, query_padding_mask, key_padding_mask)
-        
+
         N, S, E = k.size()
 
         # compute costs (N, T, E), (N, L2, E) -> (N, T, S)
-        cost = self.cost_fn(q, k)
+        cost = self.cost_fn(q.float(), k.float())
 
-        # TODO: log distance penalty
-
-        # masked positions (dummy) have 0 cost
+        # masked positions have inf cost
         # cost (N, T, S)
         # query_padding_mask (N, T)
         # key_padding_mask (N, S)
-        if query_padding_mask is not None:
-            cost.masked_fill_(
-                query_padding_mask.unsqueeze(2), 0
+        log_alpha = -cost - self.buffered_log_penalty(cost).unsqueeze(0)
+        # log_alpha = log_alpha.float()  # does not work with fp16. cast to fp32
+        if qk_padding_mask is not None:
+            final_mask = qk_padding_mask.unsqueeze(1) & (~qk_padding_mask).unsqueeze(2)
+            # mask out normal -> pad attentions
+            log_alpha.masked_fill_(
+                final_mask,
+                float("-inf"),
+            )
+            # mask out pad -> normal attentions
+            log_alpha.masked_fill_(
+                final_mask.transpose(2, 1),
+                float("-inf"),
             )
 
-        if key_padding_mask is not None:
-            cost.masked_fill_(
-                key_padding_mask.unsqueeze(1), 0
-            )
-
+        # import pdb; pdb.set_trace()
         # compute sinkhorn
-        cost = cost.float()  # does not work with fp16. cast to fp32
         attn = gumbel_sinkhorn(
-            -cost,
+            log_alpha,
             tau=self.sinkhorn_temperature,
             n_iter=self.sinkhorn_iters,
             noise=True
@@ -243,7 +272,7 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
             except ValueError:
                 entropy = 0
 
-        attn = attn[:, :-n_dummy, :] if n_dummy > 0 else attn
+        attn = attn[:, :-n_query_padding, :] if n_query_padding > 0 else attn
         return dist, attn.data, {
             "sinkhorn_dist": dist.data,
             "inv_rate": inv_rate.data,
@@ -289,20 +318,22 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         new_k = k
         new_key_padding_mask = key_padding_mask
 
-        kv_buckets = math.ceil(S / self.bucket_size)
+        kv_buckets = math.ceil(S / self.sinkhorn_bucket_size)
 
         # pad key value
-        new_S = kv_buckets * self.bucket_size
+        new_S = kv_buckets * self.sinkhorn_bucket_size
         if new_S != S:
             new_k = torch.cat([
                 k,
                 k.new_zeros((B, new_S - S, E)),
             ], dim=1)
-            if key_padding_mask is not None:
-                new_key_padding_mask = torch.cat([
-                    key_padding_mask,
-                    key_padding_mask.new_ones((B, new_S - S)),
-                ], dim=1)
+            if key_padding_mask is None:
+                key_padding_mask = k.new_zeros((B, S), dtype=torch.bool)
+
+            new_key_padding_mask = torch.cat([
+                key_padding_mask,
+                key_padding_mask.new_ones((B, new_S - S)),
+            ], dim=1)
 
         return (
             new_k,
@@ -319,38 +350,74 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
         """
         B, T, E = q.size()
         B, S, E = k.size()
-        kv_buckets = S // self.bucket_size
+        kv_buckets = S // self.sinkhorn_bucket_size
 
         # aggregate key by meaning (summing in paper?) each buckets
-        new_k = k.view(B, kv_buckets, self.bucket_size, E).mean(dim=2)
+        new_k = k.view(B, kv_buckets, self.sinkhorn_bucket_size, E).mean(dim=2)
 
         # aggregate padding mask by: if a bucket is all pad then it is masked.
-        new_key_padding_mask = key_padding_mask
         if key_padding_mask is not None:
-            new_key_padding_mask = key_padding_mask.view(B, kv_buckets, self.bucket_size).prod(dim=2)
+            key_padding_mask = key_padding_mask.view(
+                B, kv_buckets, self.sinkhorn_bucket_size).prod(dim=2).type_as(key_padding_mask)        
 
         # add dummy points to query
-        assert kv_buckets >= T
         new_q = q
         new_query_padding_mask = query_padding_mask
-        n_dummy = kv_buckets - T
-        if n_dummy > 0:
+        new_key_padding_mask = key_padding_mask
+        n_padding = kv_buckets - T
+        if n_padding > 0:
             new_q = torch.cat([
                 q,
-                q.new_zeros((B, n_dummy, E)),
+                q.new_zeros((B, n_padding, E)),
             ], dim=1)
-            if query_padding_mask is not None:
-                new_query_padding_mask = torch.cat([
-                    query_padding_mask,
-                    query_padding_mask.new_ones((B, n_dummy)),
-                ], dim=1)
+            if query_padding_mask is None:
+                query_padding_mask = q.new_zeros((B, T), dtype=torch.bool)
+
+            new_query_padding_mask = torch.cat([
+                query_padding_mask,
+                query_padding_mask.new_ones((B, n_padding)),
+            ], dim=1)
+
+        elif n_padding < 0:
+            new_k = torch.cat([
+                new_k,
+                new_k.new_zeros((B, -n_padding, E)),
+            ], dim=1)
+            if key_padding_mask is None:
+                key_padding_mask = k.new_zeros((B, kv_buckets), dtype=torch.bool)
+
+            new_key_padding_mask = torch.cat([
+                key_padding_mask,
+                key_padding_mask.new_ones((B, -n_padding)),
+            ], dim=1)
+
+        # zero out dummy (and padding) points so that they are 0-cost
+        if new_query_padding_mask is not None:
+            new_q.masked_fill_(
+                new_query_padding_mask.unsqueeze(-1), 0.
+            )
+        if new_key_padding_mask is not None:
+            new_k.masked_fill_(
+                new_key_padding_mask.unsqueeze(-1), 0.
+            )
+
+        # determine much many pads are considered as dummy
+        # convert some paddings into dummies by increasing non pad tokens
+        B, S, E = new_q.size()
+        query_len = new_q.new_full((B,), S) if new_query_padding_mask is None else (~new_query_padding_mask).sum(-1)
+        key_len = new_k.new_full((B,), S) if new_key_padding_mask is None else (~new_key_padding_mask).sum(-1)
+
+        final_len = torch.max(query_len, key_len)
+        if final_len.eq(S).all():
+            final_padding_mask = None
+        else:
+            final_padding_mask = lengths_to_padding_mask(final_len, S)
 
         return (
             new_q,
             new_k,
-            new_query_padding_mask,
-            new_key_padding_mask,
-            n_dummy
+            final_padding_mask,
+            n_padding
         )
 
     # def undo_aggregate_buckets(self, v, tail_v):
@@ -358,6 +425,17 @@ class LabelSmoothedCrossEntropySinkhornCriterion(LabelSmoothedCrossEntropyCriter
     #         v: (B, new_S, E),
     #     """
     #     B, kv_buckets, bucket_size_E = v.size()
-    #     E = bucket_size_E // self.bucket_size
-    #     new_v = v.view(B, kv_buckets * self.bucket_size, E)
+    #     E = bucket_size_E // self.sinkhorn_bucket_size
+    #     new_v = v.view(B, kv_buckets * self.sinkhorn_bucket_size, E)
     #     return new_v[:, :-tail_v, :] if tail_v > 0 else new_v
+
+def lengths_to_padding_mask(lengths, max_length=None):
+    """Convert lengths of shape (B, ) to padding mask."""
+    batch_size = lengths.shape[0]
+    if max_length is None:
+        max_length = int(torch.max(lengths).item())
+    padding_mask = torch.arange(  # [0, ..., T-1]
+        max_length, device=lengths.device, dtype=lengths.dtype
+    ).expand(batch_size, max_length) >= lengths.unsqueeze(1)
+
+    return padding_mask
