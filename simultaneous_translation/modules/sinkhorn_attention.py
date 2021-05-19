@@ -148,11 +148,13 @@ class SinkhornAttention(nn.Module):
                 v,
                 v.new_zeros((B, new_S - S, E)),
             ], dim=1)
-            if key_padding_mask is not None:
-                new_key_padding_mask = torch.cat([
-                    key_padding_mask,
-                    key_padding_mask.new_ones((B, new_S - S)),
-                ], dim=1)
+            if key_padding_mask is None:
+                key_padding_mask = k.new_zeros((B, S), dtype=torch.bool)
+
+            new_key_padding_mask = torch.cat([
+                key_padding_mask,
+                key_padding_mask.new_ones((B, new_S - S)),
+            ], dim=1)
 
         return (
             new_q,
@@ -184,7 +186,8 @@ class SinkhornAttention(nn.Module):
         # aggregate padding mask by: if a bucket is all pad then it is masked.
         new_key_padding_mask = key_padding_mask
         if key_padding_mask is not None:
-            new_key_padding_mask = key_padding_mask.view(B, kv_buckets, self.bucket_size).prod(dim=2)
+            new_key_padding_mask = key_padding_mask.view(
+                B, kv_buckets, self.bucket_size).prod(dim=2).type_as(key_padding_mask)
 
         return (
             new_q,

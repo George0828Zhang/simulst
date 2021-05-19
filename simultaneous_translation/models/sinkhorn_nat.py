@@ -112,36 +112,36 @@ class S2TSinkhornNATransformerModel(S2TTransformerModel):
         decoder.apply(init_bert_params)
         return decoder
 
-    def forward_embeddings(self, tokens):
-        """ convenient function for sinkhorn loss """
-        return F.embedding(
-            tokens,
-            self.decoder.output_projection.weight
-        )
-
-    def output_projection(self, x):
-        """ convenient function for sinkhorn loss """
-        return self.decoder.output_projection(x)
-
     def forward(self, src_tokens, src_lengths, prev_output_tokens):
-        """ convenient override for sinkhorn loss """
-        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
-        x, extra = self.decoder(
-            prev_output_tokens=None,  # prev_output_tokens,
-            encoder_out=encoder_out,
-            features_only=True,
+
+        encoder_out = self.encoder(
+            src_tokens=src_tokens,
+            src_lengths=src_lengths,
         )
-        logits = self.decoder.output_projection(x)
+        x, extra = self.decoder.extract_features(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
+        logits = self.decoder.output_layer(x)
         extra["decoder_states"] = x
 
         # padding mask for speech
         padding_mask = encoder_out["encoder_padding_mask"][0] \
             if len(encoder_out["encoder_padding_mask"]) > 0 else None
 
+        extra["encoder_out"] = encoder_out
+
         # in this model, encoder and decoder padding masks are the same
         extra["padding_mask"] = padding_mask
-        extra["encoder_out"] = encoder_out
         return logits, extra
+
+    def forward_embeddings(self, tokens):
+        return F.embedding(
+            tokens,
+            self.decoder.output_projection.weight
+        )
+
+    def output_layer(self, x):
+        return self.decoder.output_layer(x)
 
     def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
         if not from_encoder:
@@ -191,14 +191,6 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
         x = encoder_out["encoder_out"][0]
         decoder_padding_mask = encoder_out["encoder_padding_mask"][0] \
             if len(encoder_out["encoder_padding_mask"]) > 0 else None
-        # encoder_states = x
-        # encoder_padding_mask = decoder_padding_mask
-
-        # position
-        T, N, E = x.size()
-        positions = self.embed_positions(x.new_empty(N, T, dtype=torch.long))
-        x = self.embed_scale * x + positions.transpose(0, 1)
-        x = self.dropout_module(x)
 
         # T x B x C
         attn: Optional[Tensor] = None
@@ -224,6 +216,9 @@ class SinkhornNATransformerDecoder(TransformerDecoder):
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
+
+        if self.project_out_dim is not None:
+            x = self.project_out_dim(x)
 
         return x, {"attn": [attn], "log_alpha": [log_alpha]}  # , "inner_states": inner_states,}
 
