@@ -22,8 +22,8 @@ from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
-
-class CausalTransformerEncoderLayer(TransformerEncoderLayer):
+class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
+    """ Enhance encoder layers by adding log-distance penalty """
     def __init__(self, args):
         super().__init__(args)
         self._future_mask = torch.empty(0)
@@ -37,9 +37,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
             or (not self._future_mask.device == tensor.device)
             or self._future_mask.size(0) < dim
         ):
-            self._future_mask = torch.triu(
-                utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
-            )
+            self._future_mask = torch.zeros([dim, dim])
             if self.log_penalty:
                 penalty = torch.arange(dim).type_as(self._future_mask)
                 penalty = torch.abs(
@@ -47,7 +45,10 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
                 ).clamp(min=1)
                 self._future_mask -= penalty.log()
         self._future_mask = self._future_mask.to(tensor)
-        return self._future_mask[:dim, :dim]
+        if self._future_mask.any():
+            return self._future_mask[:dim, :dim]  
+        else:
+            return None
 
     def forward(self, x, encoder_padding_mask):
 
@@ -84,6 +85,28 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
             x = self.final_layer_norm(x)
         return x
 
+class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
+    """ Same as NonCausal, but adds future masking """
+
+    def buffered_future_mask(self, tensor):
+        dim = tensor.size(0)
+        # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
+        if (
+            self._future_mask.size(0) == 0
+            or (not self._future_mask.device == tensor.device)
+            or self._future_mask.size(0) < dim
+        ):
+            self._future_mask = torch.triu(
+                utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
+            )
+            if self.log_penalty:
+                penalty = torch.arange(dim).type_as(self._future_mask)
+                penalty = torch.abs(
+                    penalty.unsqueeze(1) - penalty
+                ).clamp(min=1)
+                self._future_mask -= penalty.log()
+        self._future_mask = self._future_mask.to(tensor)
+        return self._future_mask[:dim, :dim]
 
 class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
     """Wait-k Decoder layer block.
