@@ -96,7 +96,7 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
             "--sinkhorn-energy",
             type=str,
             required=True,
-            choices=["dot", "cos", "L2"],
+            choices=["dot", "cos", "l2"],
             help=(
                 'type of energy function to use to calculate attention. available: dot, cos, L2'
             ),

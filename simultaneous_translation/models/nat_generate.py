@@ -48,7 +48,10 @@ def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, **unu
         score = torch.index_select(
             lp.view(inp_l, -1), -1, toks.view(-1)).sum()
         toks = toks.unique_consecutive()
-        toks = toks[toks != blank_idx]
+        if toks.eq(blank_idx).all():
+            toks = toks[:1]
+        else:
+            toks = toks[toks != blank_idx]
 
         p_score = torch.zeros_like(toks).float()
 

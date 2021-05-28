@@ -37,7 +37,7 @@ def gumbel_sinkhorn(log_alpha: torch.Tensor, tau: float = 0.7, n_iter: int = 20,
 class SinkhornAttention(nn.Module):
     """Single head attention with sinkhorn normalization.
     """
-    ENERGY_FNS = ["dot", "cos", "L2"]
+    ENERGY_FNS = ["dot", "cos", "l2"]
 
     def __init__(
         self,
@@ -278,8 +278,12 @@ class SinkhornAttention(nn.Module):
                 k.unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
                 dim=-1,
             )
-        elif self.energy_fn == "L2":
-            attn_weights = -torch.cdist(q, k, p=2) * self.scaling
+        elif self.energy_fn == "l2":
+            # cdist not inplemented for half.
+            attn_weights = -torch.cdist(q.float(), k.float(), p=2) * self.scaling
+            attn_weights = attn_weights.type_as(q)
+        else:
+            raise NotImplementedError()
 
         log_alpha = attn_weights
 
