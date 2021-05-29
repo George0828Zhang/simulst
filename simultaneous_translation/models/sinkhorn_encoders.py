@@ -69,7 +69,6 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
         parser.add_argument(
             "--non-causal-layers",
             type=int,
-            default=5,
             help=(
                 'number of layers for non-causal encoder.'
             ),
@@ -276,7 +275,7 @@ class S2TSinkhornCascadedEncoder(FairseqEncoder):
         log_alpha: Optional[Tensor] = None
         for layer in self.sinkhorn_layers:
             x, attn, log_alpha = layer(
-                x,  # this is non_causal_states
+                x.detach(),  # this is non_causal_states
                 causal_states,
                 encoder_padding_mask,
                 self_attn_mask=None,

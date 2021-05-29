@@ -36,7 +36,7 @@ class SinkhornTransformerDecoderLayer(TransformerDecoderLayer):
             add_zero_attn=add_zero_attn
         )
         if no_fc:
-            self.fc1 = self.fc2 = None
+            self.fc1 = self.fc2 = self.final_layer_norm = None
 
     def build_encoder_attention(self, embed_dim, args):
         return SinkhornAttention(

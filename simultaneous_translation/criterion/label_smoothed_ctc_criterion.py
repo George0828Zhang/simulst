@@ -49,7 +49,7 @@ def calc_recall_precision(predict, target, pad_idx=1, eps=1e-8):
 @dataclass
 class LabelSmoothedCTCCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
     decoder_use_ctc: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "use ctcloss for decoder loss."},
     )
     zero_infinity: Optional[bool] = field(
@@ -92,24 +92,35 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
         if self.report_sinkhorn_dist:
-            attn = net_output[1]["attn"][0].float().data
-            cost = -net_output[1]["log_alpha"][0].float().data
-            denom = attn.size(-1)
+            attn = net_output[1]["attn"][0]
+            cost = -net_output[1]["log_alpha"][0]
+            pad_mask = net_output[1]["padding_mask"]
+            if pad_mask is not None:
+                cost = cost.masked_fill(
+                    pad_mask.unsqueeze(1), 0
+                ).masked_fill(
+                    pad_mask.unsqueeze(2), 0
+                )
+            B, S, denom = attn.size()
+            dist = (cost * attn).mean() * B * S
+            loss = loss * 0.7 + dist * 0.3
 
             with torch.no_grad():
                 # compute sinkhorn distance
-                dist = (cost * attn).sum() / denom
+                # dist = (cost * attn).sum() / denom
 
                 # compute inversion rate
                 # expected value of position in source that aligns to each target
                 alignment = (utils.new_arange(attn) * attn).sum(-1)  # (N, L1)
-                inv_rate = alignment[:, 1:] < alignment[:, :-1]
-                inv_rate = inv_rate.float().sum() / denom
+                inv_rate = alignment[:, :-1] - alignment[:, 1:]
+                inv_rate = (inv_rate / denom).clamp(min=0).float().sum()
+                # inv_rate = alignment[:, 1:] < alignment[:, :-1]
+                # inv_rate = inv_rate.float().sum() / denom
 
                 try:
-                    attn = F.normalize(F.relu(attn) + 1e-8, p=1.0, dim=-1)
-                    entropy = Categorical(probs=attn).entropy().sum() / denom
+                    entropy = Categorical(probs=attn.float()).entropy().sum() / denom
                 except ValueError:
+                    logger.warning("entropy calculation failed because of invalid input!")
                     entropy = 0
 
         else:
@@ -119,7 +130,7 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             encoder_out = net_output[1]["encoder_out"]
             encoder_states = encoder_out["encoder_out"][0]
             with torch.no_grad():
-                x = model.decoder.forward_fc(encoder_states)
+                x = encoder_states
                 logits = model.output_layer(x.permute(1, 0, 2))
                 y_pred = logits.argmax(-1)
                 recall, precision = calc_recall_precision(y_pred, sample["target"])

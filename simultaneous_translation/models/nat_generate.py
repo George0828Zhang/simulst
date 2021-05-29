@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Tuple
 from torch import Tensor
 import torch.nn.functional as F
 
-def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, **unused):
+def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, collapse=True, **unused):
     """
     lprobs is expected to be batch first. (from model forward output, or net_output)
     """
@@ -47,7 +47,8 @@ def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, **unu
         toks = lp.argmax(dim=-1)
         score = torch.index_select(
             lp.view(inp_l, -1), -1, toks.view(-1)).sum()
-        toks = toks.unique_consecutive()
+        if collapse:
+            toks = toks.unique_consecutive()
         if toks.eq(blank_idx).all():
             toks = toks[:1]
         else:
