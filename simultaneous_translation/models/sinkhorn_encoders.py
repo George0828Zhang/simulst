@@ -84,6 +84,14 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
             ),
         )
         parser.add_argument(
+            "--sinkhorn-noise-factor",
+            type=float,
+            required=True,
+            help=(
+                'represents how many gumbel randomness in training.'
+            ),
+        )
+        parser.add_argument(
             "--sinkhorn-bucket-size",
             type=int,
             required=True,
@@ -174,7 +182,7 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
 
         return lprobs
 
-    def forward_causal(self, src_tokens, src_lengths, prev_output_tokens):
+    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False, **unused):
 
         encoder_out = self.encoder.forward_causal(
             src_tokens=src_tokens,
@@ -193,11 +201,12 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
         }
         return x, extra
 
-    def forward(self, src_tokens, src_lengths, prev_output_tokens):
+    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False, **unused):
 
         encoder_out = self.encoder(
             src_tokens=src_tokens,
             src_lengths=src_lengths,
+            return_all_hiddens=return_all_hiddens
         )
         x = self.output_projection(encoder_out["encoder_out"][0])
         x = x.transpose(1, 0)  # force batch first
@@ -243,17 +252,17 @@ class S2TSinkhornCascadedEncoder(FairseqEncoder):
             torch.tensor(args.fusion_factor)
         )
 
-    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False,):
-        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=True)
+    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
+        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
         causal_out.update({
             "attn": [],
             "log_alpha": [],
         })
         return causal_out
 
-    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False,):
+    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
         """ Added non-causal forwards and sinkhorn fusion """
-        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=True)
+        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
 
         # causal outputs
         causal_states = x = causal_out["encoder_out"][0]

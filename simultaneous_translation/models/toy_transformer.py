@@ -18,7 +18,8 @@ from fairseq import checkpoint_utils, utils
 
 from fairseq.models import (
     register_model,
-    register_model_architecture
+    register_model_architecture,
+    FairseqEncoder
 )
 from fairseq.models.transformer import (
     TransformerEncoder,
@@ -38,12 +39,13 @@ from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from simultaneous_translation.models.nat_generate import generate
 from simultaneous_translation.models.sinkhorn_encoders import (
     S2TSinkhornEncoderModel,
-    S2TSinkhornCascadedEncoder,
+    # S2TSinkhornCascadedEncoder,
 )
 from simultaneous_translation.modules import (
     CausalTransformerEncoderLayer,
     NonCausalTransformerEncoderLayer,
-    SinkhornTransformerDecoderLayer
+    # SinkhornTransformerDecoderLayer
+    SinkhornAttention,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,7 @@ class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
                 f"loaded pretrained encoder from: "
                 f"{args.load_pretrained_encoder_from}"
             )
-        cascade = S2TSinkhornCascadedEncoder(args, encoder)
+        cascade = SinkhornCascadedEncoder(args, encoder)
         return cascade
 
     @classmethod
@@ -117,6 +119,85 @@ class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
             embed_dict = utils.parse_embedding(path)
             utils.load_embedding(embed_dict, dictionary, emb)
         return emb
+
+class SinkhornCascadedEncoder(FairseqEncoder):
+    """
+    Add following layers to the causal encoder,
+    1) several non-causal encoder layers
+    2) 1 sinkhorn layer attention
+    """
+    def __init__(self, args, causal_encoder):
+        super().__init__(None)
+        self.causal_encoder = causal_encoder
+        self.non_causal_layers = nn.ModuleList([
+            NonCausalTransformerEncoderLayer(args) for i in range(args.non_causal_layers)
+        ])
+        self.sinkhorn_layer = SinkhornAttention(
+            args.encoder_embed_dim,
+            bucket_size=args.sinkhorn_bucket_size,
+            dropout=0,  # args.attention_dropout, already have gumbel noise
+            no_query_proj=True,
+            no_key_proj=True,
+            no_value_proj=True,
+            no_out_proj=True,
+            sinkhorn_tau=args.sinkhorn_tau,
+            sinkhorn_iters=args.sinkhorn_iters,
+            sinkhorn_noise_factor=args.sinkhorn_noise_factor,
+            energy_fn=args.sinkhorn_energy,
+        )
+
+    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
+        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
+        causal_out.update({
+            "attn": [],
+            "log_alpha": [],
+        })
+        return causal_out
+
+    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
+        """ Added non-causal forwards and sinkhorn fusion """
+        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
+
+        # causal outputs
+        causal_states = x = causal_out["encoder_out"][0]
+        encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
+            if len(causal_out["encoder_padding_mask"]) > 0 else None
+        encoder_states = causal_out["encoder_states"]
+
+        # forward non-causal layers
+        for layer in self.non_causal_layers:
+            x = layer(x, encoder_padding_mask)
+            if return_all_hiddens:
+                assert encoder_states is not None
+                encoder_states.append(x)
+        non_causal_states = x
+
+        # reorder using sinkhorn layers
+        # (q,k,v) = (non-causal, causal, causal)
+        x, attn, log_alpha = self.sinkhorn_layer(
+            x,  # this is non_causal_states
+            causal_states,
+            causal_states,
+            encoder_padding_mask,
+        )
+
+        return {
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [encoder_padding_mask] if encoder_padding_mask is not None else [],  # B x T
+            "encoder_embedding": [],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+            "attn": [attn],
+            "log_alpha": [log_alpha],
+            "causal_out": [causal_states],
+        }
+
+    def reorder_encoder_out(self, encoder_out, new_order):
+        """ This reorder is fairseq's reordering of batch dimension,
+        different from our reorder.
+        """
+        return self.causal_encoder.reorder_encoder_out(encoder_out, new_order)
 
 @register_model_architecture(
     "toy_transformer", "toy_transformer"

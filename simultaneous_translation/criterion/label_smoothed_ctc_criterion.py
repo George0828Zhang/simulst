@@ -128,7 +128,8 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
 
         if self.report_accuracy:
             encoder_out = net_output[1]["encoder_out"]
-            encoder_states = encoder_out["encoder_out"][0]
+            encoder_states = encoder_out["causal_out"][0] \
+                if "causal_out" in encoder_out else encoder_out["encoder_out"][0]
             with torch.no_grad():
                 x = encoder_states
                 logits = model.output_layer(x.permute(1, 0, 2))

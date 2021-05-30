@@ -96,8 +96,10 @@ class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
             or (not self._future_mask.device == tensor.device)
             or self._future_mask.size(0) < dim
         ):
+            neg_inf = -torch.finfo(tensor.dtype).max
             self._future_mask = torch.triu(
-                utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
+                torch.full([dim, dim], neg_inf), 1
+                # utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
             )
             if self.log_penalty:
                 penalty = torch.arange(dim).type_as(self._future_mask)

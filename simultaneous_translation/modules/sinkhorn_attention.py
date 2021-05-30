@@ -14,22 +14,30 @@ from torch import Tensor, nn
 from torch.nn import Parameter
 
 
-def sample_gumbel(proto, eps=1e-6):
-    u = torch.empty_like(proto).uniform_(0, 1)
+def sample_gumbel(proto, eps=1e-8):
+    u = torch.rand_like(proto)
     return -torch.log(-torch.log(u + eps) + eps)
 
 
-def log_sinkhorn_norm(log_alpha: torch.Tensor, n_iter: int = 20) -> (torch.Tensor,):
+def log_sinkhorn_norm(log_alpha: torch.Tensor, n_iter=20) -> (torch.Tensor,):
     for _ in range(n_iter):
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -1, keepdim=True)
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -2, keepdim=True)
     return log_alpha.exp()
 
 
-def gumbel_sinkhorn(log_alpha: torch.Tensor, tau: float = 0.7, n_iter: int = 20, noise: bool = True) -> (torch.Tensor,):
-    if noise:
-        gumbel_noise = sample_gumbel(log_alpha)
-        log_alpha = (log_alpha + gumbel_noise) / tau
+def gumbel_sinkhorn(
+    log_alpha: torch.Tensor,
+    tau: float = 0.7,
+    n_iter: int = 20,
+    noise_factor: float = 1.0
+) -> (torch.Tensor,):
+    # if noise:
+    #     gumbel_noise = sample_gumbel(log_alpha)
+    #     log_alpha = (log_alpha + gumbel_noise) / tau
+    if noise_factor > 0:
+        log_alpha = log_alpha + noise_factor * sample_gumbel(log_alpha)
+    log_alpha = log_alpha / tau
     sampled_perm_mat = log_sinkhorn_norm(log_alpha, n_iter)
     return sampled_perm_mat
 
@@ -48,10 +56,13 @@ class SinkhornAttention(nn.Module):
         dropout=0.0,
         bias=True,
         add_bias_kv=False,
+        no_query_proj=False,
+        no_key_proj=False,
         no_value_proj=False,
         no_out_proj=False,
         sinkhorn_tau=0.75,
         sinkhorn_iters=8,
+        sinkhorn_noise_factor=1.0,
         energy_fn='dot',
     ):
         super().__init__()
@@ -65,8 +76,15 @@ class SinkhornAttention(nn.Module):
         )
         self.scaling = self.embed_dim ** -0.5
 
-        self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        if no_query_proj:
+            self.q_proj = None
+        else:
+            self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        if no_key_proj:
+            self.k_proj = None
+        else:
+            self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
 
         if no_value_proj:
             self.v_proj = None
@@ -86,6 +104,7 @@ class SinkhornAttention(nn.Module):
 
         self.tau = sinkhorn_tau
         self.iters = sinkhorn_iters
+        self.noise_factor = sinkhorn_noise_factor
         self.energy_fn = energy_fn
         assert self.energy_fn in self.ENERGY_FNS, f"{energy_fn} not in {self.ENERGY_FNS}"
 
@@ -94,8 +113,10 @@ class SinkhornAttention(nn.Module):
     def reset_parameters(self):
         # Empirically observed the convergence to be much better with
         # the scaled initialization
-        nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
-        nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+        if self.q_proj is not None:
+            nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+        if self.k_proj is not None:
+            nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
         if self.v_proj is not None:
             nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
 
@@ -228,9 +249,15 @@ class SinkhornAttention(nn.Module):
         assert key_bsz == bsz
         assert src_len, bsz == value.shape[:2]
 
-        q = self.q_proj(query)
-        k = self.k_proj(key)
+        q = query
+        k = key
         v = value
+
+        if self.q_proj is not None:
+            q = self.q_proj(query)
+        
+        if self.k_proj is not None:
+            k = self.k_proj(key)
 
         if self.v_proj is not None:
             v = self.v_proj(value)
@@ -273,19 +300,21 @@ class SinkhornAttention(nn.Module):
         if self.energy_fn == "dot":
             attn_weights = torch.bmm(q, k.transpose(1, 2)) * self.scaling
         elif self.energy_fn == "cos":
+            # serious underflow for half.
             attn_weights = F.cosine_similarity(
-                q.unsqueeze(2),  # (bsz, tgt_len, 1, embed_dim)
-                k.unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
+                q.float().unsqueeze(2),  # (bsz, tgt_len, 1, embed_dim)
+                k.float().unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
                 dim=-1,
             )
+            attn_weights = attn_weights.type_as(q)
         elif self.energy_fn == "l2":
             # cdist not inplemented for half.
-            attn_weights = -torch.cdist(q.float(), k.float(), p=2) * self.scaling
+            attn_weights = -torch.cdist(q.float(), k.float(), p=2)  # * self.scaling
             attn_weights = attn_weights.type_as(q)
         else:
             raise NotImplementedError()
 
-        log_alpha = attn_weights
+        log_alpha = attn_weights.clone()
 
         assert list(attn_weights.size()) == [bsz, tgt_len, src_len]
 
@@ -314,7 +343,7 @@ class SinkhornAttention(nn.Module):
             attn_weights.float(),
             tau=self.tau,
             n_iter=self.iters,
-            noise=True
+            noise_factor=self.noise_factor if self.training else 0,
         )
 
         attn_weights = attn_weights_float.type_as(log_alpha)
