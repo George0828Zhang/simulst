@@ -4,30 +4,26 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Tuple, Dict, List, Optional, Any
-
 import logging
+from typing import Dict, List, Optional, Tuple
 import pdb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fairseq import checkpoint_utils, utils
-from fairseq.data.data_utils import lengths_to_padding_mask
-
 from torch import Tensor
+from fairseq import checkpoint_utils, utils
+# from fairseq.data.data_utils import lengths_to_padding_mask
+
 
 from fairseq.models import (
     FairseqEncoder,
     FairseqEncoderModel,
     register_model,
-    register_model_architecture
-)
-from fairseq.models.transformer import (
-    TransformerDecoder,
+    register_model_architecture,
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.models.speech_to_text.s2t_transformer import (
-    S2TTransformerModel,
+    # S2TTransformerModel,
     s2t_transformer_s,
 )
 
@@ -36,7 +32,10 @@ from simultaneous_translation.models.nat_generate import generate
 from simultaneous_translation.models.waitk_s2t_transformer import (
     S2TCausalEncoder,
 )
-from simultaneous_translation.modules import SinkhornTransformerDecoderLayer, NonCausalTransformerEncoderLayer
+from simultaneous_translation.modules import (
+    NonCausalTransformerEncoderLayer,
+    SinkhornAttention
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,26 +107,6 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
                 'type of energy function to use to calculate attention. available: dot, cos, L2'
             ),
         )
-        parser.add_argument(
-            "--fusion-factor",
-            type=float,
-            required=True,
-            help=(
-                'represents how many future information glanced in training.'
-            ),
-        )
-        parser.add_argument(
-            "--fusion-type",
-            type=str,
-            required=True,
-            choices=["add", "inter", "prob"],
-            help=(
-                'type of operation to fuse causal and non-causal information. available options:'
-                'add: additive, simply adds them together.'
-                'inter: interpolation by factor controlled with --fusion-factor.'
-                'prob: randomly selected using bernoulli test with probability --fusion-factor.'
-            ),
-        )
 
     @classmethod
     def build_encoder(cls, args):
@@ -141,7 +120,7 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
                 f"loaded pretrained encoder from: "
                 f"{args.load_pretrained_encoder_from}"
             )
-        cascade = S2TSinkhornCascadedEncoder(args, encoder)
+        cascade = SinkhornCascadedEncoder(args, encoder)
         return cascade
 
     @classmethod
@@ -221,6 +200,10 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
         }
         return x, extra
 
+    @property
+    def output_layer(self):
+        return self.output_projection
+
     def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
         if not from_encoder:
             return generate(self, src_tokens, src_lengths, blank_idx=blank_idx)
@@ -231,11 +214,11 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
         """Used by sequence generator."""
         return self.encoder.max_positions()
 
-class S2TSinkhornCascadedEncoder(FairseqEncoder):
+class SinkhornCascadedEncoder(FairseqEncoder):
     """
     Add following layers to the causal encoder,
     1) several non-causal encoder layers
-    2) 1 sinkhorn layer (reorder layer)
+    2) 1 sinkhorn layer attention
     """
     def __init__(self, args, causal_encoder):
         super().__init__(None)
@@ -243,13 +226,18 @@ class S2TSinkhornCascadedEncoder(FairseqEncoder):
         self.non_causal_layers = nn.ModuleList([
             NonCausalTransformerEncoderLayer(args) for i in range(args.non_causal_layers)
         ])
-        self.sinkhorn_layers = nn.ModuleList([
-            SinkhornTransformerDecoderLayer(args, no_fc=True)
-        ])
-        self.fusion_type = args.fusion_type
-        self.register_buffer(
-            "fusion_factor",
-            torch.tensor(args.fusion_factor)
+        self.sinkhorn_layer = SinkhornAttention(
+            args.encoder_embed_dim,
+            bucket_size=args.sinkhorn_bucket_size,
+            dropout=0,  # args.attention_dropout, already have gumbel noise
+            no_query_proj=True,
+            no_key_proj=True,
+            no_value_proj=True,
+            no_out_proj=True,
+            sinkhorn_tau=args.sinkhorn_tau,
+            sinkhorn_iters=args.sinkhorn_iters,
+            sinkhorn_noise_factor=args.sinkhorn_noise_factor,
+            energy_fn=args.sinkhorn_energy,
         )
 
     def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
@@ -280,30 +268,12 @@ class S2TSinkhornCascadedEncoder(FairseqEncoder):
 
         # reorder using sinkhorn layers
         # (q,k,v) = (non-causal, causal, causal)
-        attn: Optional[Tensor] = None
-        log_alpha: Optional[Tensor] = None
-        for layer in self.sinkhorn_layers:
-            x, attn, log_alpha = layer(
-                x.detach(),  # this is non_causal_states
-                causal_states,
-                encoder_padding_mask,
-                self_attn_mask=None,
-                self_attn_padding_mask=encoder_padding_mask,
-            )
-            if return_all_hiddens:
-                assert encoder_states is not None
-                encoder_states.append(x)
-
-        # fusion of non_causal_states and reordered_states
-        if self.fusion_type == "add":
-            x = non_causal_states + x
-        elif self.fusion_type == "inter":
-            x = (1. - self.fusion_factor) * non_causal_states + self.fusion_factor * x
-        elif self.fusion_type == "prob":
-            factor = torch.bernoulli(self.fusion_factor)
-            x = (1. - factor) * non_causal_states + factor * x
-        else:
-            raise NotImplementedError(f"{self.fusion_type} unkown fusion type.")
+        x, attn, log_alpha = self.sinkhorn_layer(
+            x,  # this is non_causal_states
+            causal_states,
+            causal_states,
+            encoder_padding_mask,
+        )
 
         return {
             "encoder_out": [x],  # T x B x C
@@ -314,6 +284,7 @@ class S2TSinkhornCascadedEncoder(FairseqEncoder):
             "src_lengths": [],
             "attn": [attn],
             "log_alpha": [log_alpha],
+            "causal_out": [causal_states],
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -329,4 +300,4 @@ def sinkhorn_encoder_s(args):
     s2t_transformer_s(args)
     args.share_decoder_input_output_embed = True  # force embed sharing
     args.encoder_log_penalty = True  # force log penalty
-    args.non_causal_layers = getattr(args, "non_causal_layers", 5)  # 5 non-causal, 1 sinkhorn
+    args.non_causal_layers = getattr(args, "non_causal_layers", 6)  # 5 non-causal, 1 sinkhorn
