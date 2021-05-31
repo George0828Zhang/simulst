@@ -14,7 +14,7 @@ mkdir -p ${ready}
 
 FAIRSEQ=../fairseq
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
-source ~/envs/apex/bin/activate
+# source ~/envs/apex/bin/activate
 
 echo 'generating toy data...'
 python create_toy_dataset.py \
@@ -24,6 +24,7 @@ python create_toy_dataset.py \
     --n-test 3000 \
     --max-len 256 \
     --min-len 20 \
+    --max-upsample 4 \
     --seed 7
 
 python -m fairseq_cli.preprocess \

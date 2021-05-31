@@ -19,7 +19,7 @@ def sample_gumbel(proto, eps=1e-8):
     return -torch.log(-torch.log(u + eps) + eps)
 
 
-def log_sinkhorn_norm(log_alpha: torch.Tensor, n_iter=20) -> (torch.Tensor,):
+def log_sinkhorn_norm(log_alpha: torch.Tensor, n_iter: int = 20) -> (torch.Tensor,):
     for _ in range(n_iter):
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -1, keepdim=True)
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -2, keepdim=True)
@@ -32,9 +32,6 @@ def gumbel_sinkhorn(
     n_iter: int = 20,
     noise_factor: float = 1.0
 ) -> (torch.Tensor,):
-    # if noise:
-    #     gumbel_noise = sample_gumbel(log_alpha)
-    #     log_alpha = (log_alpha + gumbel_noise) / tau
     if noise_factor > 0:
         log_alpha = log_alpha + noise_factor * sample_gumbel(log_alpha)
     log_alpha = log_alpha / tau
@@ -255,7 +252,7 @@ class SinkhornAttention(nn.Module):
 
         if self.q_proj is not None:
             q = self.q_proj(query)
-        
+
         if self.k_proj is not None:
             k = self.k_proj(key)
 
@@ -266,10 +263,7 @@ class SinkhornAttention(nn.Module):
             assert self.bias_v is not None
             k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
             v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
-            # if attn_mask is not None:
-            #     attn_mask = torch.cat(
-            #         [attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1
-            #     )
+
             if key_padding_mask is not None:
                 key_padding_mask = torch.cat(
                     [
@@ -297,30 +291,30 @@ class SinkhornAttention(nn.Module):
         if new_key_padding_mask is not None and new_key_padding_mask.dim() == 0:
             new_key_padding_mask = None
 
+        # Convert to float since most operations below does not support fp16.
+        # when cdist for half is supported in the future, should convert after.
+        q = q.float()
+        k = k.float()
+
         if self.energy_fn == "dot":
             attn_weights = torch.bmm(q, k.transpose(1, 2)) * self.scaling
         elif self.energy_fn == "cos":
             # serious underflow for half.
             attn_weights = F.cosine_similarity(
-                q.float().unsqueeze(2),  # (bsz, tgt_len, 1, embed_dim)
-                k.float().unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
+                q.unsqueeze(2),  # (bsz, tgt_len, 1, embed_dim)
+                k.unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
                 dim=-1,
             )
-            attn_weights = attn_weights.type_as(q)
         elif self.energy_fn == "l2":
             # cdist not inplemented for half.
-            attn_weights = -torch.cdist(q.float(), k.float(), p=2)  # * self.scaling
-            attn_weights = attn_weights.type_as(q)
+            attn_weights = -torch.cdist(q, k, p=2)  # * self.scaling
         else:
             raise NotImplementedError()
 
-        log_alpha = attn_weights.clone()
+        # save a copy before masking
+        log_alpha = attn_weights.type_as(v)
 
         assert list(attn_weights.size()) == [bsz, tgt_len, src_len]
-
-        # if attn_mask is not None:
-        #     attn_mask = attn_mask.unsqueeze(0)
-        #     attn_weights += attn_mask
 
         if new_key_padding_mask is not None:
             assert list(new_key_padding_mask.size()) == [bsz, src_len]
@@ -340,20 +334,21 @@ class SinkhornAttention(nn.Module):
             )
 
         attn_weights_float = gumbel_sinkhorn(
-            attn_weights.float(),
+            attn_weights,
             tau=self.tau,
             n_iter=self.iters,
             noise_factor=self.noise_factor if self.training else 0,
         )
 
-        attn_weights = attn_weights_float.type_as(log_alpha)
+        # convert back to half/float
+        attn_weights = attn_weights_float.type_as(v)
         attn_probs = self.dropout_module(attn_weights)
 
         attn = torch.bmm(attn_probs, v)
 
         attn = self.undo_aggregate_buckets(attn, v_tail)
 
-        attn = attn.transpose(0, 1)  # .contiguous()
+        attn = attn.transpose(0, 1)
 
         if self.out_proj is not None:
             attn = self.out_proj(attn)

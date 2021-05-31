@@ -2,9 +2,10 @@ import argparse
 from pathlib import Path
 import numpy as np
 from tqdm import trange
+from itertools import chain
 
 def get_alphabet():
-    """ credit goes to 
+    """ credit goes to
     https://stackoverflow.com/questions/1477294/generate-random-utf-8-string-in-python """
 
     try:
@@ -34,10 +35,15 @@ def get_alphabet():
     ]
     return alphabet
 
-def generate(L, alphabet):
+def generate(L, alphabet, max_upsample=1):
     src_ids = np.random.randint(0, len(alphabet), L)  # w/ random permutation
     tgt_ids = np.sort(src_ids)
-    src = [alphabet[i] for i in src_ids]
+
+    up = np.random.randint(1, max_upsample + 1, L)
+    src = chain.from_iterable((
+        [alphabet[i]] * n
+        for i, n in zip(src_ids, up)
+    ))
     tgt = [str(i) for i in tgt_ids]
     return " ".join(src), " ".join(tgt)
 
@@ -49,6 +55,8 @@ if __name__ == "__main__":
     parser.add_argument("--n-test", type=int, default=1000, help="n testing examples")
     parser.add_argument("--max-len", type=int, default=200, help="maximum length of examples")
     parser.add_argument("--min-len", type=int, default=30, help="minimum length of examples")
+    parser.add_argument("--max-upsample",
+                        type=int, default=1, help="maximum number of repeats for each source token, simulating speech.")
     parser.add_argument("--seed", type=int, default=73, help="random seed.")
 
     args = parser.parse_args()
@@ -65,6 +73,6 @@ if __name__ == "__main__":
         with open(srcfile, "w") as f_src, open(tgtfile, "w") as f_tgt:
             for i in trange(N):
                 L = np.random.randint(args.min_len, args.max_len + 1)
-                src, tgt = generate(L, alphabet)
+                src, tgt = generate(L, alphabet, args.max_upsample)
                 f_src.write(src + "\n")
                 f_tgt.write(tgt + "\n")

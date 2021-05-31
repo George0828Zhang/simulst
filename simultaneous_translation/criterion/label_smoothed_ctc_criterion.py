@@ -92,22 +92,32 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
         if self.report_sinkhorn_dist:
-            attn = net_output[1]["attn"][0]
-            cost = -net_output[1]["log_alpha"][0]
-            pad_mask = net_output[1]["padding_mask"]
-            if pad_mask is not None:
-                cost = cost.masked_fill(
-                    pad_mask.unsqueeze(1), 0
-                ).masked_fill(
-                    pad_mask.unsqueeze(2), 0
-                )
-            B, S, denom = attn.size()
-            dist = (cost * attn).mean() * B * S
-            loss = loss * 0.7 + dist * 0.3
+            # # compute sinkhorn distance
+            # attn = net_output[1]["attn"][0].float()
+            # cost = -net_output[1]["log_alpha"][0].float()
+            # pad_mask = net_output[1]["padding_mask"]
+            # if pad_mask is not None:
+            #     cost = cost.masked_fill(
+            #         pad_mask.unsqueeze(1), 0
+            #     ).masked_fill(
+            #         pad_mask.unsqueeze(2), 0
+            #     )
+            # B, S, denom = attn.size()
+            # dist = (cost * attn).mean() * B * S
+            # loss = loss * 0.7 + dist * 0.3
 
             with torch.no_grad():
-                # compute sinkhorn distance
-                # dist = (cost * attn).sum() / denom
+                attn = net_output[1]["attn"][0].float()
+                cost = -net_output[1]["log_alpha"][0].float()
+                pad_mask = net_output[1]["padding_mask"]
+                if pad_mask is not None:
+                    cost = cost.masked_fill(
+                        pad_mask.unsqueeze(1), 0
+                    ).masked_fill(
+                        pad_mask.unsqueeze(2), 0
+                    )
+                B, S, denom = attn.size()
+                dist = (cost * attn).mean() * B * S
 
                 # compute inversion rate
                 # expected value of position in source that aligns to each target

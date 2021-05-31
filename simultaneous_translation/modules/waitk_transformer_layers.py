@@ -46,7 +46,7 @@ class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
                 self._future_mask -= penalty.log()
         self._future_mask = self._future_mask.to(tensor)
         if self._future_mask.any():
-            return self._future_mask[:dim, :dim]  
+            return self._future_mask[:dim, :dim]
         else:
             return None
 
@@ -113,7 +113,7 @@ class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
 class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
     """Wait-k Decoder layer block.
     1. added encoder_attn_mask for wait-k masking
-    2. for simul trans, we CANNOT cache encoder states! in inference, 
+    2. for simul trans, we CANNOT cache encoder states! in inference,
         the encoder states dicts should be constantly updated.
     """
     def forward(
@@ -193,7 +193,7 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
                     saved_state["prev_key_padding_mask"] = prev_attn_state[2]
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
-            # for simul trans, you CANNOT cache encoder states! in inference, 
+            # for simul trans, you CANNOT cache encoder states! in inference,
             # the encoder should be constantly updated.
             x, attn = self.encoder_attn(
                 query=x,
@@ -223,6 +223,6 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         return x, attn
-    
+
     def make_generation_fast_(self, need_attn: bool = False, **kwargs):
         self.need_attn = need_attn

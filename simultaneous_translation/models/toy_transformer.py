@@ -69,9 +69,9 @@ class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
 
     def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
         if not from_encoder:
-            return generate(self, src_tokens, src_lengths, blank_idx=blank_idx, collapse=False)
+            return generate(self, src_tokens, src_lengths, blank_idx=blank_idx, collapse=True)
         logits, extra = self.forward_causal(src_tokens, src_lengths, None)
-        return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx, collapse=False)
+        return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx, collapse=True)
 
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):
@@ -208,7 +208,7 @@ def toy_transformer(args):
     args.encoder_layers = getattr(args, "encoder_layers", 3)
     args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
     args.encoder_normalize_before = getattr(args, "encoder_normalize_before", True)
-    args.max_source_positions = getattr(args, "max_source_positions", 512)
+    args.max_source_positions = getattr(args, "max_source_positions", 1024)
     # args.decoder_layers = getattr(args, "decoder_layers", 2)
     # args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 2)
     # args.decoder_normalize_before = getattr(args, "decoder_normalize_before", True)
