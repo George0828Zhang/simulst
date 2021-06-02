@@ -63,6 +63,18 @@ class CausalTransformerEncoder(TransformerEncoder):
 
 @register_model("toy_transformer")
 class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
+    @staticmethod
+    def add_args(parser):
+        """Add model-specific arguments to the parser."""
+        S2TSinkhornEncoderModel.add_args(parser)
+        parser.add_argument(
+            "--upsample-ratio",
+            type=int,
+            help=(
+                'number of upsampling factor before ctc loss. used for mt.'
+            ),
+        )
+
     @property
     def output_layer(self):
         return self.output_projection
@@ -145,6 +157,7 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             sinkhorn_noise_factor=args.sinkhorn_noise_factor,
             energy_fn=args.sinkhorn_energy,
         )
+        self.upsample_ratio = args.upsample_ratio
 
     def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
         causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
@@ -180,6 +193,13 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             causal_states,
             encoder_padding_mask,
         )
+
+        # upsample
+        x = x.repeat_interleave(
+            self.upsample_ratio, dim=0)  # batch middle
+        if encoder_padding_mask is not None:
+            encoder_padding_mask = encoder_padding_mask.repeat_interleave(
+                self.upsample_ratio, dim=1)
 
         return {
             "encoder_out": [x],  # T x B x C
@@ -221,3 +241,23 @@ def toy_transformer(args):
     base_architecture(args)
 
     args.encoder_log_penalty = False
+
+@register_model_architecture(
+    "toy_transformer", "toy_transformer_mt"
+)
+def toy_transformer_mt(args):
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_ffn_embed_dim = getattr(args, "encoder_ffn_embed_dim", 2048)
+    args.encoder_layers = getattr(args, "encoder_layers", 6)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+    args.encoder_normalize_before = getattr(args, "encoder_normalize_before", True)
+    args.max_source_positions = getattr(args, "max_source_positions", 1024)
+    args.max_target_positions = getattr(args, "max_target_positions", 1024)
+
+    args.non_causal_layers = getattr(args, "non_causal_layers", 6)
+
+    args.dropout = getattr(args, "dropout", 0.1)
+    base_architecture(args)
+
+    args.encoder_log_penalty = False
+    args.upsample_ratio = getattr(args, "upsample_ratio", 2)
