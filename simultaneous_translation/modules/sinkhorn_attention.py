@@ -15,7 +15,7 @@ from torch.nn import Parameter
 
 
 def sample_gumbel(proto, eps=1e-8):
-    u = torch.rand_like(proto)
+    u = torch.rand_like(proto, dtype=torch.float32)
     return -torch.log(-torch.log(u + eps) + eps)
 
 
@@ -33,7 +33,8 @@ def gumbel_sinkhorn(
     noise_factor: float = 1.0
 ) -> (torch.Tensor,):
     if noise_factor > 0:
-        log_alpha = log_alpha + noise_factor * sample_gumbel(log_alpha)
+        noise = noise_factor * sample_gumbel(log_alpha)
+        log_alpha = log_alpha + noise.type_as(log_alpha)
     log_alpha = log_alpha / tau
     sampled_perm_mat = log_sinkhorn_norm(log_alpha, n_iter)
     return sampled_perm_mat
@@ -291,23 +292,22 @@ class SinkhornAttention(nn.Module):
         if new_key_padding_mask is not None and new_key_padding_mask.dim() == 0:
             new_key_padding_mask = None
 
-        # Convert to float since most operations below does not support fp16.
-        # when cdist for half is supported in the future, should convert after.
-        q = q.float()
-        k = k.float()
-
         if self.energy_fn == "dot":
             attn_weights = torch.bmm(q, k.transpose(1, 2)) * self.scaling
         elif self.energy_fn == "cos":
             # serious underflow for half.
+            q = q.float()
+            k = k.float()
             attn_weights = F.cosine_similarity(
                 q.unsqueeze(2),  # (bsz, tgt_len, 1, embed_dim)
                 k.unsqueeze(1),  # (bsz, 1, src_len, embed_dim)
                 dim=-1,
-            )
+            ).type_as(v)
         elif self.energy_fn == "l2":
             # cdist not inplemented for half.
-            attn_weights = -torch.cdist(q, k, p=2)  # * self.scaling
+            q = q.float()
+            k = k.float()
+            attn_weights = -torch.cdist(q, k, p=2).type_as(v)
         else:
             raise NotImplementedError()
 
@@ -321,16 +321,16 @@ class SinkhornAttention(nn.Module):
             new_key_padding_mask = new_key_padding_mask.bool()
 
             final_mask = new_key_padding_mask.unsqueeze(1) & (~new_key_padding_mask).unsqueeze(2)
-
+            neg_inf = -torch.finfo(attn_weights.dtype).max
             # mask out normal -> pad attentions
             attn_weights = attn_weights.masked_fill(
                 final_mask,
-                float("-inf"),
+                neg_inf,
             )
             # mask out pad -> normal attentions
             attn_weights = attn_weights.masked_fill(
                 final_mask.transpose(2, 1),
-                float("-inf"),
+                neg_inf,
             )
 
         attn_weights_float = gumbel_sinkhorn(
