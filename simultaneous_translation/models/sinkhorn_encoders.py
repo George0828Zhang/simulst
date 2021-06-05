@@ -29,9 +29,7 @@ from fairseq.models.speech_to_text.s2t_transformer import (
 
 # user
 from simultaneous_translation.models.nat_generate import generate
-from simultaneous_translation.models.waitk_s2t_transformer import (
-    S2TCausalEncoder,
-)
+from .causal_encoder import S2TCausalEncoder
 from simultaneous_translation.modules import (
     NonCausalTransformerEncoderLayer,
     SinkhornAttention

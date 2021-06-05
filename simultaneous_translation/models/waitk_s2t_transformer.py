@@ -36,15 +36,16 @@ from fairseq.models.transformer import (
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerModel,
-    S2TTransformerEncoder as S2TTransformerEncoderProto,
+    # S2TTransformerEncoder as S2TTransformerEncoderProto,
     s2t_transformer_s,
 )
 
 # user
+from .causal_encoder import S2TCausalEncoder
 from simultaneous_translation.modules import (
     WaitkTransformerDecoderLayer,
-    CausalConv1dSubsampler,
-    CausalTransformerEncoderLayer,
+    # CausalConv1dSubsampler,
+    # CausalTransformerEncoderLayer,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,92 +142,6 @@ class S2TWaitkTransformerModel(S2TTransformerModel):
         extra["decoder_states"] = x
         logits = self.decoder.output_projection(x)
         return logits, extra
-
-class S2TCausalEncoder(S2TTransformerEncoderProto):
-    """Speech-to-text Transformer encoder that consists of causal input subsampler
-    and causal attention.
-    """
-    def __init__(self, args):
-        super().__init__(args)
-        self.subsample = CausalConv1dSubsampler(
-            args.input_feat_per_channel * args.input_channels,
-            args.conv_channels,
-            args.encoder_embed_dim,
-            [int(k) for k in args.conv_kernel_sizes.split(",")],
-        )
-        self.transformer_layers = nn.ModuleList([])
-        self.transformer_layers.extend(
-            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
-        )
-
-    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False,):
-        """ Same as prototype but returns hidden states """
-        x, input_lengths = self.subsample(src_tokens, src_lengths)
-        x = self.embed_scale * x
-
-        encoder_padding_mask = lengths_to_padding_mask(input_lengths)
-        positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
-        x += positions
-        x = self.dropout_module(x)
-
-        encoder_states = []
-        for layer in self.transformer_layers:
-            x = layer(x, encoder_padding_mask)
-            if return_all_hiddens:
-                assert encoder_states is not None
-                encoder_states.append(x)
-
-        if self.layer_norm is not None:
-            x = self.layer_norm(x)
-
-        return {
-            "encoder_out": [x],  # T x B x C
-            "encoder_padding_mask": [encoder_padding_mask] if encoder_padding_mask.any() else [],  # B x T
-            "encoder_embedding": [],  # B x T x C
-            "encoder_states": encoder_states,  # List[T x B x C]
-            "src_tokens": [],
-            "src_lengths": [],
-        }
-
-    def slice_encoder_out(self, encoder_out, context_size):
-        """ Slice encoder output according to *context_size*.
-        encoder_out:
-            (S, N, E) -> (context_size, N, E)
-        encoder_padding_mask:
-            (N, S) -> (N, context_size)
-        encoder_embedding:
-            (N, S, E) -> (N, context_size, E)
-        encoder_states:
-            List(S, N, E) -> List(context_size, N, E)
-        """
-        new_encoder_out = (
-            [] if len(encoder_out["encoder_out"]) == 0
-            else [x.clone()[:context_size] for x in encoder_out["encoder_out"]]
-        )
-
-        new_encoder_padding_mask = (
-            [] if len(encoder_out["encoder_padding_mask"]) == 0
-            else [x.clone()[:, :context_size] for x in encoder_out["encoder_padding_mask"]]
-        )
-
-        new_encoder_embedding = (
-            [] if len(encoder_out["encoder_embedding"]) == 0
-            else [x.clone()[:, :context_size] for x in encoder_out["encoder_embedding"]]
-        )
-
-        encoder_states = encoder_out["encoder_states"]
-        if len(encoder_states) > 0:
-            for idx, state in enumerate(encoder_states):
-                encoder_states[idx] = state.clone()[:context_size]
-
-        return {
-            "encoder_out": new_encoder_out,  # T x B x C
-            "encoder_padding_mask": new_encoder_padding_mask,  # B x T
-            "encoder_embedding": new_encoder_embedding,  # B x T x C
-            "encoder_states": encoder_states,  # List[T x B x C]
-            "src_tokens": [],  # B x T
-            "src_lengths": [],  # B x 1
-        }
 
 class WaitkTransformerDecoder(TransformerDecoder):
     """
