@@ -158,10 +158,43 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             energy_fn=args.sinkhorn_energy,
         )
         self.upsample_ratio = args.upsample_ratio
+        if self.upsample_ratio > 1:
+            self.upsampler = Linear(
+                args.encoder_embed_dim, args.encoder_embed_dim * self.upsample_ratio)
+
+    def upsample(self, x, encoder_padding_mask):
+        if self.upsample_ratio == 1:
+            return x, encoder_padding_mask
+
+        if encoder_padding_mask is not None:
+            encoder_padding_mask = encoder_padding_mask.repeat_interleave(
+                self.upsample_ratio, dim=1)
+
+        T, B, C = x.size()
+        # T x B x C
+        # -> T x B x C*U
+        # -> U * (T x B x C)
+        # -> T x U x B x C
+        # -> T*U x B x C
+        x = torch.stack(
+            torch.chunk(
+                self.upsampler(x),
+                self.upsample_ratio,
+                dim=-1
+            ),
+            dim=1
+        ).view(-1, B, C)
+        return x, encoder_padding_mask
 
     def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
         causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
+        x = causal_out["encoder_out"][0]
+        encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
+            if len(causal_out["encoder_padding_mask"]) > 0 else None
+        x, encoder_padding_mask = self.upsample(x, encoder_padding_mask)
         causal_out.update({
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [encoder_padding_mask] if encoder_padding_mask is not None else [],  # B x T
             "attn": [],
             "log_alpha": [],
         })
@@ -195,11 +228,8 @@ class SinkhornCascadedEncoder(FairseqEncoder):
         )
 
         # upsample
-        x = x.repeat_interleave(
-            self.upsample_ratio, dim=0)  # batch middle
-        if encoder_padding_mask is not None:
-            encoder_padding_mask = encoder_padding_mask.repeat_interleave(
-                self.upsample_ratio, dim=1)
+        x, encoder_padding_mask = self.upsample(x, encoder_padding_mask)
+        causal_states, _ = self.upsample(causal_states, None)
 
         return {
             "encoder_out": [x],  # T x B x C

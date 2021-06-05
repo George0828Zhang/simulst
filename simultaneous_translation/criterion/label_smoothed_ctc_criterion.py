@@ -139,8 +139,9 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
                 x = encoder_states
                 logits = model.output_layer(x.permute(1, 0, 2))
                 y_pred = logits.argmax(-1)
-                recall, precision = calc_recall_precision(y_pred, sample["target"])
-                blank_rate = y_pred.eq(self.blank_idx).float().mean()
+                recall, precision = calc_recall_precision(
+                    y_pred, sample["target"], pad_idx=self.pad_idx)
+                blank_rate = y_pred.eq(self.blank_idx).float().mean(-1).sum()
         else:
             recall = 0
             precision = 0
@@ -255,5 +256,5 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             "precision", precision / nsentences, nsentences, round=3
         )
         metrics.log_scalar(
-            "blank_rate", blank_rate, 1, round=3
+            "blank_rate", blank_rate / nsentences, nsentences, round=3
         )
