@@ -12,12 +12,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from fairseq import checkpoint_utils, utils
+# from fairseq.data.data_utils import lengths_to_padding_mask
+
+# from torch import Tensor
 
 from fairseq.models import (
     register_model,
     register_model_architecture,
-    FairseqEncoder,
-    FairseqEncoderModel
+    FairseqEncoder
 )
 from fairseq.models.transformer import (
     TransformerEncoder,
@@ -27,86 +29,44 @@ from fairseq.models.transformer import (
     base_architecture,
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
+# from fairseq.models.speech_to_text.s2t_transformer import (
+#     S2TTransformerModel,
+#     S2TTransformerEncoder as S2TTransformerEncoderProto,
+#     s2t_transformer_s,
+# )
 
 # user
-from .causal_encoder import CausalTransformerEncoder
 from simultaneous_translation.models.nat_generate import generate
+from simultaneous_translation.models.sinkhorn_encoders import (
+    S2TSinkhornEncoderModel,
+    # S2TSinkhornCascadedEncoder,
+)
 from simultaneous_translation.modules import (
     CausalTransformerEncoderLayer,
     NonCausalTransformerEncoderLayer,
+    # SinkhornTransformerDecoderLayer
     SinkhornAttention,
 )
 
 logger = logging.getLogger(__name__)
 
-@register_model("toy_transformer")
-class ToySinkhornEncoderModel(FairseqEncoderModel):
-    """
-    S2TTransformer with a causal encoder and reorder module cascaded.
-    """
-    def __init__(self, encoder, output_projection):
-        super().__init__(encoder)
-        self.output_projection = output_projection
-        self.one_pass_decoding = True  # must implement generate()
 
+class CausalTransformerEncoder(TransformerEncoder):
+    """Transformer encoder that consists of causal attention.
+    """
+    def __init__(self, args, dictionary, embed_tokens):
+        super().__init__(args, dictionary, embed_tokens)
+        self.layers = nn.ModuleList([])
+        self.layers.extend(
+            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
+        )
+
+@register_model("toy_transformer")
+class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        FairseqEncoderModel.add_args(parser)
-        parser.add_argument(
-            "--load-pretrained-encoder-from",
-            type=str,
-            metavar="STR",
-            help="model to take encoder weights from (for initialization)",
-        )
-        parser.add_argument(
-            "--encoder-log-penalty", action="store_true",
-            help=(
-                'add logrithmic distance penalty in speech encoder.'
-            ),
-        )
-        parser.add_argument(
-            "--non-causal-layers",
-            type=int,
-            help=(
-                'number of layers for non-causal encoder.'
-            ),
-        )
-        parser.add_argument('--sinkhorn-tau', type=float, required=True,
-                            help='temperature for gumbel sinkhorn.')
-        parser.add_argument(
-            "--sinkhorn-iters",
-            type=int,
-            required=True,
-            help=(
-                'iters of sinkhorn normalization to perform.'
-            ),
-        )
-        parser.add_argument(
-            "--sinkhorn-noise-factor",
-            type=float,
-            required=True,
-            help=(
-                'represents how many gumbel randomness in training.'
-            ),
-        )
-        parser.add_argument(
-            "--sinkhorn-bucket-size",
-            type=int,
-            required=True,
-            help=(
-                'number of elements to group before performing sinkhorn sorting.'
-            ),
-        )
-        parser.add_argument(
-            "--sinkhorn-energy",
-            type=str,
-            required=True,
-            choices=["dot", "cos", "l2"],
-            help=(
-                'type of energy function to use to calculate attention. available: dot, cos, L2'
-            ),
-        )
+        S2TSinkhornEncoderModel.add_args(parser)
         parser.add_argument(
             "--upsample-ratio",
             type=int,
@@ -114,6 +74,16 @@ class ToySinkhornEncoderModel(FairseqEncoderModel):
                 'number of upsampling factor before ctc loss. used for mt.'
             ),
         )
+
+    @property
+    def output_layer(self):
+        return self.output_projection
+
+    def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
+        if not from_encoder:
+            return generate(self, src_tokens, src_lengths, blank_idx=blank_idx, collapse=True)
+        logits, extra = self.forward_causal(src_tokens, src_lengths, None)
+        return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx, collapse=True)
 
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):
@@ -161,82 +131,6 @@ class ToySinkhornEncoderModel(FairseqEncoderModel):
             embed_dict = utils.parse_embedding(path)
             utils.load_embedding(embed_dict, dictionary, emb)
         return emb
-
-    def get_normalized_probs(
-        self,
-        net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
-        log_probs: bool,
-        sample: Optional[Dict[str, Tensor]] = None,
-    ):
-        # net_output['encoder_out'] is a (B, T, D) tensor
-        """Scriptable helper function for get_normalized_probs in ~BaseFairseqModel"""
-        logits = net_output[0]
-
-        if torch.is_tensor(logits):
-            # syntactic sugar for simple models which don't have a decoder
-            # (e.g., the classification tutorial)
-            logits_f = logits.float()
-            if log_probs:
-                lprobs = F.log_softmax(logits_f, dim=-1)
-            else:
-                lprobs = F.softmax(logits_f, dim=-1)
-        else:
-            raise NotImplementedError
-
-        return lprobs
-
-    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False, **unused):
-
-        encoder_out = self.encoder.forward_causal(
-            src_tokens=src_tokens,
-            src_lengths=src_lengths,
-        )
-        x = self.output_projection(encoder_out["encoder_out"][0])
-        x = x.transpose(1, 0)  # force batch first
-
-        padding_mask = encoder_out["encoder_padding_mask"][0] \
-            if len(encoder_out["encoder_padding_mask"]) > 0 else None
-        extra = {
-            "padding_mask": padding_mask,
-            "encoder_out": encoder_out,
-            "attn": encoder_out["attn"],
-            "log_alpha": encoder_out["log_alpha"],
-        }
-        return x, extra
-
-    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False, **unused):
-
-        encoder_out = self.encoder(
-            src_tokens=src_tokens,
-            src_lengths=src_lengths,
-            return_all_hiddens=return_all_hiddens
-        )
-        x = self.output_projection(encoder_out["encoder_out"][0])
-        x = x.transpose(1, 0)  # force batch first
-
-        padding_mask = encoder_out["encoder_padding_mask"][0] \
-            if len(encoder_out["encoder_padding_mask"]) > 0 else None
-        extra = {
-            "padding_mask": padding_mask,
-            "encoder_out": encoder_out,
-            "attn": encoder_out["attn"],
-            "log_alpha": encoder_out["log_alpha"],
-        }
-        return x, extra
-
-    @property
-    def output_layer(self):
-        return self.output_projection
-
-    def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
-        if not from_encoder:
-            return generate(self, src_tokens, src_lengths, blank_idx=blank_idx, collapse=True)
-        logits, extra = self.forward_causal(src_tokens, src_lengths, None)
-        return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx, collapse=True)
-
-    def max_decoder_positions(self):
-        """Used by sequence generator."""
-        return self.encoder.max_positions()
 
 class SinkhornCascadedEncoder(FairseqEncoder):
     """
@@ -292,15 +186,8 @@ class SinkhornCascadedEncoder(FairseqEncoder):
         ).view(-1, B, C)
         return x, encoder_padding_mask
 
-    def forward_causal(
-        self,
-        src_tokens,
-        src_lengths,
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        return_all_hiddens: bool = False
-    ):
-        causal_out = self.causal_encoder(
-            src_tokens, src_lengths, incremental_state=incremental_state, return_all_hiddens=return_all_hiddens)
+    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
+        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
         x = causal_out["encoder_out"][0]
         encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
             if len(causal_out["encoder_padding_mask"]) > 0 else None
