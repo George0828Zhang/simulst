@@ -4,7 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import List, Optional
+from typing import List, Optional, Dict
+from torch import Tensor
 import torch.nn as nn
 from fairseq.models.speech_to_text.s2t_transformer import Conv1dSubsampler
 
@@ -47,18 +48,43 @@ class CausalConv1dSubsampler(nn.Module):
             for i, k in enumerate(kernel_sizes)
         )
 
-    def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
+    # def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
+    #     out = in_seq_lens_tensor.clone()
+    #     for pad, ksz in zip(self.left_pads, self.kernel_sizes):
+    #         out = ((out.float() - 1 + 2 * pad - self.dilation * (ksz - 1)) / self.stride + 1).floor().long()
+    #     return out
+
+    # def forward(self, src_tokens, src_lengths):
+    #     bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
+    #     x = src_tokens.transpose(1, 2).contiguous()  # -> B x (C x D) x T
+    #     for conv in self.conv_layers:
+    #         x = conv(x)
+    #         x = nn.functional.glu(x, dim=1)
+    #     _, _, out_seq_len = x.size()
+    #     x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
+    #     return x, self.get_out_seq_lens_tensor(src_lengths)
+
+    def get_out_seq_lens_tensor(self, in_seq_lens_tensor, pad_sides=2):
         out = in_seq_lens_tensor.clone()
         for pad, ksz in zip(self.left_pads, self.kernel_sizes):
-            out = ((out.float() - 1 + 2 * pad - self.dilation * (ksz - 1)) / self.stride + 1).floor().long()
+            out = ((out.float() - 1 + pad_sides * pad - self.dilation * (ksz - 1)) / self.stride + 1).floor().long()
         return out
 
-    def forward(self, src_tokens, src_lengths):
-        bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
+    def forward(
+        self, src_tokens, src_lengths,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+    ):
+        """ Input Shape B x T x C Conv Shape B x C x T Output Shape T x B x C"""
         x = src_tokens.transpose(1, 2).contiguous()  # -> B x (C x D) x T
         for conv in self.conv_layers:
             x = conv(x)
             x = nn.functional.glu(x, dim=1)
-        _, _, out_seq_len = x.size()
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
-        return x, self.get_out_seq_lens_tensor(src_lengths)
+
+        if incremental_state is not None:
+            out_lens = self.get_out_seq_lens_tensor(src_lengths, pad_sides=1)
+            L = out_lens.max()
+            x = x[:L, ...]
+            return x, out_lens
+        else:
+            return x, self.get_out_seq_lens_tensor(src_lengths)

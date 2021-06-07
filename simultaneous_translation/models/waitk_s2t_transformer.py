@@ -159,19 +159,29 @@ class S2TCausalEncoder(S2TTransformerEncoderProto):
             [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
         )
 
-    def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False,):
+    def forward(
+        self, src_tokens, src_lengths,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        return_all_hiddens: bool = False,
+    ):
         """ Same as prototype but returns hidden states """
-        x, input_lengths = self.subsample(src_tokens, src_lengths)
+        x, input_lengths = self.subsample(src_tokens, src_lengths, incremental_state=incremental_state)
         x = self.embed_scale * x
 
         encoder_padding_mask = lengths_to_padding_mask(input_lengths)
         positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
+
+        if incremental_state is not None:
+            encoder_padding_mask = encoder_padding_mask.new_zeros(
+                (encoder_padding_mask.size(0), 1))
+            x = x[-1:, ...]
+            positions = positions[-1:, ...]
         x += positions
         x = self.dropout_module(x)
 
         encoder_states = []
         for layer in self.transformer_layers:
-            x = layer(x, encoder_padding_mask)
+            x = layer(x, encoder_padding_mask, incremental_state=incremental_state)
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)

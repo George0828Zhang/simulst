@@ -50,7 +50,9 @@ class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
         else:
             return None
 
-    def forward(self, x, encoder_padding_mask):
+    def forward(
+        self, x, encoder_padding_mask, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+    ):
 
         attn_mask = self.buffered_future_mask(x)
 
@@ -66,6 +68,7 @@ class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
             key=x,
             value=x,
             key_padding_mask=encoder_padding_mask,
+            incremental_state=incremental_state,
             attn_mask=attn_mask,
         )
         x = self.dropout_module(x)
@@ -87,6 +90,9 @@ class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
 
 class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
     """ Same as NonCausal, but adds future masking """
+    def __init__(self, args):
+        super().__init__(args)
+        self.waitk = args.waitk
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)

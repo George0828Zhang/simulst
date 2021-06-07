@@ -61,6 +61,78 @@ class CausalTransformerEncoder(TransformerEncoder):
             [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
         )
 
+    def forward(
+        self,
+        src_tokens,
+        src_lengths: Optional[torch.Tensor] = None,  # not used
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        return_all_hiddens: bool = False,
+        token_embeddings: Optional[torch.Tensor] = None,  # not used
+    ):
+        """ Same as parent but with incremental_states """
+        # compute padding mask
+        encoder_padding_mask = src_tokens.eq(self.padding_idx)
+        has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
+
+        # x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
+        # embed positions
+        positions = None
+        if self.embed_positions is not None:
+            positions = self.embed_positions(
+                src_tokens, incremental_state=incremental_state
+            )
+
+        if incremental_state is not None:
+            src_tokens = src_tokens[:, -1:]
+            if positions is not None:
+                positions = positions[:, -1:]
+
+        # embed tokens and positions
+        x = encoder_embedding = self.embed_scale * self.embed_tokens(src_tokens)
+
+        if positions is not None:
+            x += positions
+
+        if self.layernorm_embedding is not None:
+            x = self.layernorm_embedding(x)
+
+        x = self.dropout_module(x)
+
+        # account for padding while computing the representation
+        if has_pads:
+            x = x * (1 - encoder_padding_mask.unsqueeze(-1).type_as(x))
+
+        # B x T x C -> T x B x C
+        x = x.transpose(0, 1)
+
+        encoder_states = []
+
+        if return_all_hiddens:
+            encoder_states.append(x)
+
+        # encoder layers
+        for layer in self.layers:
+            x = layer(
+                x,
+                encoder_padding_mask=encoder_padding_mask if has_pads else None,
+                incremental_state=incremental_state,
+            )
+            if return_all_hiddens:
+                assert encoder_states is not None
+                encoder_states.append(x)
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
+
+        return {
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [encoder_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
 @register_model("toy_transformer")
 class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
     @staticmethod
@@ -186,8 +258,16 @@ class SinkhornCascadedEncoder(FairseqEncoder):
         ).view(-1, B, C)
         return x, encoder_padding_mask
 
-    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
-        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
+    def forward_causal(
+        self, src_tokens, src_lengths,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        return_all_hiddens: bool = False
+    ):
+        causal_out = self.causal_encoder(
+            src_tokens, src_lengths,
+            incremental_state=incremental_state,
+            return_all_hiddens=return_all_hiddens
+        )
         x = causal_out["encoder_out"][0]
         encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
             if len(causal_out["encoder_padding_mask"]) > 0 else None

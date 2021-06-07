@@ -161,11 +161,17 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
 
         return lprobs
 
-    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False, **unused):
-
+    def forward_causal(
+        self, src_tokens, src_lengths,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        return_all_hiddens: bool = False,
+        **unused,
+    ):
         encoder_out = self.encoder.forward_causal(
             src_tokens=src_tokens,
             src_lengths=src_lengths,
+            incremental_state=incremental_state,
+            return_all_hiddens=return_all_hiddens
         )
         x = self.output_projection(encoder_out["encoder_out"][0])
         x = x.transpose(1, 0)  # force batch first
@@ -240,8 +246,16 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             energy_fn=args.sinkhorn_energy,
         )
 
-    def forward_causal(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
-        causal_out = self.causal_encoder(src_tokens, src_lengths, return_all_hiddens=return_all_hiddens)
+    def forward_causal(
+        self, src_tokens, src_lengths,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        return_all_hiddens: bool = False
+    ):
+        causal_out = self.causal_encoder(
+            src_tokens, src_lengths,
+            incremental_state=incremental_state,
+            return_all_hiddens=return_all_hiddens
+        )
         causal_out.update({
             "attn": [],
             "log_alpha": [],
