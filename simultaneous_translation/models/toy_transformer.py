@@ -12,9 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from fairseq import checkpoint_utils, utils
-# from fairseq.data.data_utils import lengths_to_padding_mask
-
-# from torch import Tensor
 
 from fairseq.models import (
     register_model,
@@ -28,23 +25,17 @@ from fairseq.models.transformer import (
     Linear,
     base_architecture,
 )
+from fairseq.modules import LayerNorm
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
-# from fairseq.models.speech_to_text.s2t_transformer import (
-#     S2TTransformerModel,
-#     S2TTransformerEncoder as S2TTransformerEncoderProto,
-#     s2t_transformer_s,
-# )
 
 # user
 from simultaneous_translation.models.nat_generate import generate
 from simultaneous_translation.models.sinkhorn_encoders import (
     S2TSinkhornEncoderModel,
-    # S2TSinkhornCascadedEncoder,
 )
 from simultaneous_translation.modules import (
     CausalTransformerEncoderLayer,
     NonCausalTransformerEncoderLayer,
-    # SinkhornTransformerDecoderLayer
     SinkhornAttention,
 )
 
@@ -56,9 +47,11 @@ class CausalTransformerEncoder(TransformerEncoder):
     """
     def __init__(self, args, dictionary, embed_tokens):
         super().__init__(args, dictionary, embed_tokens)
-        self.layers = nn.ModuleList([])
+        self.layers = nn.ModuleList([
+            CausalTransformerEncoderLayer(args, waitk=1)
+        ])
         self.layers.extend(
-            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)]
+            [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers - 1)]
         )
 
     def forward(
@@ -216,6 +209,11 @@ class SinkhornCascadedEncoder(FairseqEncoder):
         self.non_causal_layers = nn.ModuleList([
             NonCausalTransformerEncoderLayer(args) for i in range(args.non_causal_layers)
         ])
+        export = getattr(args, "export", False)
+        if args.encoder_normalize_before:
+            self.layer_norm = LayerNorm(args.encoder_embed_dim, export=export)
+        else:
+            self.layer_norm = None
         self.sinkhorn_layer = SinkhornAttention(
             args.encoder_embed_dim,
             bucket_size=args.sinkhorn_bucket_size,
@@ -296,7 +294,9 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
-        non_causal_states = x
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
 
         # reorder using sinkhorn layers
         # (q,k,v) = (non-causal, causal, causal)

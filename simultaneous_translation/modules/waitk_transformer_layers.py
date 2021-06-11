@@ -90,9 +90,10 @@ class NonCausalTransformerEncoderLayer(TransformerEncoderLayer):
 
 class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
     """ Same as NonCausal, but adds future masking """
-    def __init__(self, args):
+    def __init__(self, args, waitk=1):
         super().__init__(args)
-        self.waitk = args.waitk
+        self.waitk = waitk
+        assert self.waitk > 0, "Cannot be faster than wait-1."
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
@@ -104,7 +105,7 @@ class CausalTransformerEncoderLayer(NonCausalTransformerEncoderLayer):
         ):
             neg_inf = -torch.finfo(tensor.dtype).max
             self._future_mask = torch.triu(
-                torch.full([dim, dim], neg_inf), 1
+                torch.full([dim, dim], neg_inf), self.waitk
                 # utils.fill_with_neg_inf(torch.zeros([dim, dim])), 1
             )
             if self.log_penalty:
