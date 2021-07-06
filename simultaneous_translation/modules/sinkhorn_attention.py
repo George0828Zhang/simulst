@@ -39,6 +39,66 @@ def gumbel_sinkhorn(
     sampled_perm_mat = log_sinkhorn_norm(log_alpha, n_iter)
     return sampled_perm_mat
 
+class GaussianBlur(nn.Conv2d):
+    """ Blur the attention map before sinkhorn normalization """
+    def __init__(self, kernel_size=3):
+        super().__init__(
+            1, 1, kernel_size,
+            padding=kernel_size // 2,
+            bias=False,
+            padding_mode='replicate',
+        )
+        mu = (kernel_size - 1) / 2.
+        var = (kernel_size / 2.)**2
+        grid = torch.arange(kernel_size) - mu
+        grid_x, grid_y = torch.meshgrid(grid, grid)
+        grid_xy = grid_x**2 + grid_y**2
+
+        gaussian = torch.exp(
+            -grid_xy / (2 * var)
+        ).view(1, 1, kernel_size, kernel_size)
+        gaussian = gaussian / gaussian.sum()
+
+        self.weight.data = gaussian
+        self.weight.data.requires_grad = False
+
+    def forward(self, x):
+        return super().forward(
+            x.unsqueeze(1)
+        ).squeeze(1)
+
+# class DepthwiseConv1dTBC(nn.Conv1d):
+#     """ Makes conv1d a drop-in replacement for Linear """
+#     def __init__(self, in_channels, out_channels, kernel_size, bias=True):
+#         super().__init__(
+#             in_channels, out_channels, kernel_size,
+#             padding=kernel_size // 2,
+#             groups=in_channels,
+#             bias=bias,
+#             padding_mode='replicate',
+#         )
+#         # nn.utils.weight_norm(self, dim=2)
+
+#     def forward(self, x):
+#         return super().forward(
+#             x.permute(1, 2, 0)  # TBC -> BCT
+#         ).permute(2, 0, 1)  # BCT -> TBC
+
+# class GaussianBlur(DepthwiseConv1dTBC):
+#     """ Makes conv1d a drop-in replacement for Linear """
+#     def __init__(self, in_channels, out_channels, kernel_size, bias=False):
+#         super().__init__(
+#             in_channels, out_channels, kernel_size,
+#             bias=bias,
+#         )
+#         mu = (kernel_size - 1) / 2.
+#         var = (kernel_size / 2.)**2
+#         gaussian = (1. / (2. * math.pi * var))**0.5 * torch.exp(
+#             -(torch.arange(kernel_size) - mu)**2. / (2 * var)
+#         ).expand_as(self.weight)
+
+#         self.weight.data = gaussian
+#         self.weight.data.requires_grad = False
 
 class SinkhornAttention(nn.Module):
     """Single head attention with sinkhorn normalization.
@@ -58,6 +118,7 @@ class SinkhornAttention(nn.Module):
         no_key_proj=False,
         no_value_proj=False,
         no_out_proj=False,
+        blurr_kernel=1,
         sinkhorn_tau=0.75,
         sinkhorn_iters=8,
         sinkhorn_noise_factor=1.0,
@@ -105,6 +166,11 @@ class SinkhornAttention(nn.Module):
         self.noise_factor = sinkhorn_noise_factor
         self.energy_fn = energy_fn
         assert self.energy_fn in self.ENERGY_FNS, f"{energy_fn} not in {self.ENERGY_FNS}"
+
+        if blurr_kernel > 1:
+            self.blurr = GaussianBlur(blurr_kernel)
+        else:
+            self.blurr = None
 
         self.reset_parameters()
 
@@ -310,6 +376,10 @@ class SinkhornAttention(nn.Module):
             attn_weights = -torch.cdist(q, k, p=2).type_as(v)
         else:
             raise NotImplementedError()
+
+        # add blurring
+        if self.blurr is not None:
+            attn_weights = self.blurr(attn_weights)
 
         # save a copy before masking
         log_alpha = attn_weights.type_as(v)

@@ -48,7 +48,7 @@ class CausalTransformerEncoder(TransformerEncoder):
     def __init__(self, args, dictionary, embed_tokens):
         super().__init__(args, dictionary, embed_tokens)
         self.layers = nn.ModuleList([
-            CausalTransformerEncoderLayer(args, waitk=1)
+            CausalTransformerEncoderLayer(args, waitk=args.waitk)
         ])
         self.layers.extend(
             [CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers - 1)]
@@ -139,6 +139,8 @@ class ToySinkhornEncoderModel(S2TSinkhornEncoderModel):
                 'number of upsampling factor before ctc loss. used for mt.'
             ),
         )
+        parser.add_argument(
+            '--waitk', type=int, help='wait-k for incremental reading')
 
     @property
     def output_layer(self):
@@ -222,6 +224,7 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             no_key_proj=True,
             no_value_proj=True,
             no_out_proj=True,
+            blurr_kernel=args.blurr_kernel,
             sinkhorn_tau=args.sinkhorn_tau,
             sinkhorn_iters=args.sinkhorn_iters,
             sinkhorn_noise_factor=args.sinkhorn_noise_factor,
@@ -351,6 +354,9 @@ def toy_transformer(args):
     base_architecture(args)
 
     args.encoder_log_penalty = False
+    args.upsample_ratio = getattr(args, "upsample_ratio", 1)
+    args.blurr_kernel = getattr(args, "blurr_kernel", 3)
+    args.waitk = getattr(args, "waitk", 1)
 
 @register_model_architecture(
     "toy_transformer", "toy_transformer_mt"
@@ -371,3 +377,5 @@ def toy_transformer_mt(args):
 
     args.encoder_log_penalty = False
     args.upsample_ratio = getattr(args, "upsample_ratio", 2)
+    args.blurr_kernel = getattr(args, "blurr_kernel", 1)
+    args.waitk = getattr(args, "waitk", 1)

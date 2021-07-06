@@ -21,6 +21,7 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
+from fairseq.modules import LayerNorm
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.models.speech_to_text.s2t_transformer import (
     # S2TTransformerModel,
@@ -107,6 +108,14 @@ class S2TSinkhornEncoderModel(FairseqEncoderModel):
                 'type of energy function to use to calculate attention. available: dot, cos, L2'
             ),
         )
+        # parser.add_argument(
+        #     "--blurr-kernel",
+        #     type=int,
+        #     required=True,
+        #     help=(
+        #         'kernel size for blurring of attention map before sinkhorn. 1 means no blurring.'
+        #     ),
+        # )
 
     @classmethod
     def build_encoder(cls, args):
@@ -232,6 +241,11 @@ class SinkhornCascadedEncoder(FairseqEncoder):
         self.non_causal_layers = nn.ModuleList([
             NonCausalTransformerEncoderLayer(args) for i in range(args.non_causal_layers)
         ])
+        export = getattr(args, "export", False)
+        if args.encoder_normalize_before:
+            self.layer_norm = LayerNorm(args.encoder_embed_dim, export=export)
+        else:
+            self.layer_norm = None
         self.sinkhorn_layer = SinkhornAttention(
             args.encoder_embed_dim,
             bucket_size=args.sinkhorn_bucket_size,
@@ -240,6 +254,7 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             no_key_proj=True,
             no_value_proj=True,
             no_out_proj=True,
+            # blurr_kernel=args.blurr_kernel,
             sinkhorn_tau=args.sinkhorn_tau,
             sinkhorn_iters=args.sinkhorn_iters,
             sinkhorn_noise_factor=args.sinkhorn_noise_factor,
@@ -278,7 +293,9 @@ class SinkhornCascadedEncoder(FairseqEncoder):
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
-        non_causal_states = x
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
 
         # reorder using sinkhorn layers
         # (q,k,v) = (non-causal, causal, causal)
@@ -315,3 +332,5 @@ def sinkhorn_encoder_s(args):
     args.share_decoder_input_output_embed = True  # force embed sharing
     args.encoder_log_penalty = True  # force log penalty
     args.non_causal_layers = getattr(args, "non_causal_layers", 6)  # 5 non-causal, 1 sinkhorn
+    # args.blurr_kernel = getattr(args, "blurr_kernel", 5)
+
