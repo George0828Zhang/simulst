@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-TASK=toy_dist2
+TASK=toy_mt_wait1_tau0p1
 SPLIT=valid
 EXP=../exp
 . ${EXP}/data_path.sh
 CHECKDIR=${EXP}/checkpoints/${TASK}
-DATABIN=../DATA/toy_data/data-bin
-SRC=chr
-TGT=num
+DATABIN=${DATA}/mt/data-bin
+# DATABIN=../DATA/toy_data/data-bin
+# SRC=chr
+# TGT=num
 AVG=false
-RESULT=./mt.results
 
-GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 --lenpen 1.1 --from-encoder"
+EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
+GENARGS="--from-encoder \
+--remove-bpe sentencepiece --tokenizer moses -s ${SRC} -t ${TGT} --moses-no-escape"
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -27,6 +29,6 @@ python -m fairseq_cli.generate ${DATABIN} \
   --user-dir ${USERDIR} \
   --gen-subset ${SPLIT} \
   --task translation_infer \
-  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 --fp16 \
+  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 \
   --model-overrides '{"load_pretrained_encoder_from": None}' \
-  ${GENARGS}
+  ${GENARGS} ${EXTRAARGS}
