@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Adapted from https://github.com/pytorch/fairseq/blob/simulastsharedtask/examples/translation/prepare-iwslt14.sh
-DATA_ROOT=/media/george/Data/iwslt15
+DATA_ROOT=/livingrooms/george/iwslt15
 FAIRSEQ=$(realpath ../fairseq)
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 source ~/envs/apex/bin/activate
@@ -17,7 +17,7 @@ TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
 CLEAN=$SCRIPTS/training/clean-corpus-n.perl
 NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
 REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
-LC=$SCRIPTS/tokenizer/lowercase.perl
+# LC=$SCRIPTS/tokenizer/lowercase.perl
 
 spm_train=$FAIRSEQ/scripts/spm_train.py
 spm_encode=$FAIRSEQ/scripts/spm_encode.py
@@ -73,8 +73,7 @@ for l in ${SRC} ${TGT}; do
         grep -v '</description>' | \
         perl $NORM_PUNC $l | \
         perl $REM_NON_PRINT_CHAR | \
-        perl $TOKENIZER -threads 8 -a -l $l | \
-        perl $LC > $tmp/train.tags.$lang.$l
+        perl $TOKENIZER -threads 8 -a -l $l > $tmp/train.tags.$lang.$l
 done
 
 echo "pre-processing test data..."
@@ -89,8 +88,7 @@ for l in ${SRC} ${TGT}; do
             sed -e "s/\’/\'/g" | \
             perl $NORM_PUNC $l | \
             perl $REM_NON_PRINT_CHAR | \
-            perl $TOKENIZER -threads 8 -l $l | \
-            perl $LC > $f
+            perl $TOKENIZER -threads 8 -l $l > $f
         echo ""
     done
 done
