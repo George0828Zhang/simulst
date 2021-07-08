@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=wait_9
+TASK=st_sort_ctc
 SPLIT=dev #tst-COMMON
 EXP=../exp
 . ${EXP}/data_path.sh
@@ -7,7 +7,9 @@ CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
 AVG=true
 
-GENARGS="--beam 1 --max-len-a 1.2 --max-len-b 10 --lenpen 1.1"
+EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
+GENARGS="--beam 1 --max-len-a 1.2 --max-len-b 10 \
+--remove-bpe sentencepiece --tokenizer moses -s ${SRC} -t ${TGT} --moses-no-escape"
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -23,6 +25,6 @@ fi
 python -m fairseq_cli.generate ${DATA} --user-dir ${USERDIR} \
   --config-yaml ${CONF} --gen-subset ${SPLIT}_st \
   --task speech_to_text_infer --inference-config-yaml ../exp/infer_simulst.yaml \
-  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 80000 \
+  --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 \
   --model-overrides '{"load_pretrained_encoder_from": None}' \
-  ${GENARGS}
+  ${GENARGS} ${EXTRAARGS}

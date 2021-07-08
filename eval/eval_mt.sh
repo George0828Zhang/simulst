@@ -8,7 +8,9 @@ DATABIN=${DATA}/mt/data-bin
 AVG=true
 RESULT=./mt.results
 
-GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 --lenpen 1.1 --remove-bpe sentencepiece"
+EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
+GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 \
+--remove-bpe sentencepiece --tokenizer moses -s ${SRC} -t ${TGT} --moses-no-escape"
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -28,18 +30,18 @@ python -m fairseq_cli.generate ${DATABIN} \
   --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 --fp16 \
   --model-overrides '{"load_pretrained_encoder_from": None}' \
   --results-path ${RESULT} \
-  ${GENARGS}
+  ${GENARGS} ${EXTRAARGS}
 
-grep -E "H-[0-9]+" ${RESULT}/generate-${SPLIT}.txt | \
-  sed 's/H-//' | sort -k 1 -n | cut -f3 | \
-  python -m sacremoses -l ${TGT} detokenize -x > ${RESULT}/hypo.${TGT}
+# grep -E "H-[0-9]+" ${RESULT}/generate-${SPLIT}.txt | \
+#   sed 's/H-//' | sort -k 1 -n | cut -f3 | \
+#   python -m sacremoses -l ${TGT} detokenize -x > ${RESULT}/hypo.${TGT}
 
-cat ${DATA}/data/dev/txt/dev.${TGT} | \
-  python -m sacremoses -l ${TGT} \
-    normalize -q -d -p -c > ${RESULT}/ref.${TGT}
+# cat ${DATA}/data/dev/txt/dev.${TGT} | \
+#   python -m sacremoses -l ${TGT} \
+#     normalize -q -d -p -c > ${RESULT}/ref.${TGT}
 
-cat ${RESULT}/hypo.${TGT} | \
-  python -m sacrebleu \
-    --tokenize 13a \
-    --width 3 \
-    ${RESULT}/ref.${TGT}
+# cat ${RESULT}/hypo.${TGT} | \
+#   python -m sacrebleu \
+#     --tokenize 13a \
+#     --width 3 \
+#     ${RESULT}/ref.${TGT}
