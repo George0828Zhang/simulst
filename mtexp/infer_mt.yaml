@@ -1,0 +1,15 @@
+eval_wer: false
+eval_bleu: true
+generation_args:
+  beam: 1
+post_process: sentencepiece
+print_samples: true
+eval_bleu_args:
+  sacrebleu_tokenizer: 13a
+  sacrebleu_lowercase: false
+  sacrebleu_char_level: false
+eval_wer_args:
+  wer_tokenizer: 13a
+  wer_remove_punct: true
+  wer_lowercase: true
+  wer_char_level: false
