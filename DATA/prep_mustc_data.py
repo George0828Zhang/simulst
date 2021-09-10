@@ -5,10 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import re
-import string
 import argparse
 import logging
-import os
 from pathlib import Path
 import shutil
 from itertools import groupby
@@ -18,6 +16,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 import soundfile as sf
+# from examples.speech_to_text.data_utils import (
 from data_utils import (
     create_zip,
     extract_fbank_features,
@@ -25,16 +24,16 @@ from data_utils import (
     gen_config_yaml,
     gen_vocab,
     get_zip_manifest,
-    load_df_from_tsv,
+    # load_df_from_tsv,
     save_df_to_tsv,
     cal_gcmvn_stats,
 )
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import jieba_fast as jieba
 
 from fairseq.data.audio.audio_utils import get_waveform
-from sacremoses import MosesTokenizer, MosesPunctNormalizer
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class MUSTC(Dataset):
     utterance_id
     """
 
-    SPLITS = ["train", "dev", "tst-COMMON"]  # , "tst-HE"]
+    SPLITS = ["train", "dev", "tst-COMMON", "tst-HE"]
     LANGUAGES = ["de", "es", "fr", "it", "nl", "pt", "ro", "ru", "zh"]
 
     def __init__(self, root: str, lang: str, split: str) -> None:
@@ -102,6 +101,7 @@ class MUSTC(Dataset):
 
     def __len__(self) -> int:
         return len(self.data)
+
 
 def process(args):
     root = Path(args.data_root).absolute()
@@ -162,10 +162,12 @@ def process(args):
                 manifest["n_frames"].append(int(1 + (duration_ms - 25) / 10))
 
                 manifest["src_text"].append(src_utt)
+                if lang == "zh" and args.jieba:
+                    tgt_utt = " ".join(jieba.cut(tgt_utt, cut_all=False))
+                    tgt_utt = re.sub("\s\s+", " ", tgt_utt)
                 manifest["tgt_text"].append(tgt_utt)
                 manifest["speaker"].append(speaker_id)
             if is_train_split:
-                train_text.extend(manifest["src_text"])
                 train_text.extend(manifest["tgt_text"])
             df = pd.DataFrame.from_dict(manifest)
             df = filter_manifest_df(df, is_train_split=is_train_split)
@@ -202,7 +204,9 @@ def process(args):
             # }
         )
         # Clean up
-        shutil.rmtree(feature_root)
+        if not args.manifest_only:
+            shutil.rmtree(feature_root)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -220,16 +224,17 @@ def main():
     parser.add_argument("--cmvn-type", default="utterance",
                         choices=["global", "utterance"],
                         help="The type of cepstral mean and variance normalization")
-    parser.add_argument("--gcmvn-max-num", default=150000, type=int,
+    parser.add_argument("--gcmvn-max-num", default=15000, type=int,
                         help="Maximum number of sentences to use to estimate"
                              "global mean and variance")
     parser.add_argument("--manifest-only", action="store_true", help="only preprocess manifest. "
                         "works only when zip is already present"
                         )
+    parser.add_argument("--jieba", action="store_true", help="use jieba for chinese.")
     args = parser.parse_args()
 
     args.langs = args.langs.split(',')
-
+    print(args)
     process(args)
 
 

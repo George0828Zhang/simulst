@@ -1,7 +1,52 @@
 import torch
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from torch import Tensor
-import torch.nn.functional as F
+from fairseq.utils import new_arange
+
+
+def inject_noise(prev_output_tokens, dictionary, ratio=-1, uniform=False):
+    """ mask out tokens. uniform: uniform length masking """
+    pad = dictionary.pad()
+    bos = dictionary.bos()
+    eos = dictionary.eos()
+    unk = dictionary.unk()
+
+    # move eos to the back
+    N, T = prev_output_tokens.shape[:2]
+    target_tokens = torch.cat(
+        (
+            prev_output_tokens[:, 1:],
+            prev_output_tokens.new_full((N, 1), pad)
+        ), dim=1
+    )
+    target_length = target_tokens.ne(pad).sum(1, keepdim=True)
+    target_tokens.scatter_(1, target_length, eos)
+
+    if not uniform:
+        assert 0 <= ratio <= 1, "mask ratio invalid."
+        if ratio == 0:
+            return target_tokens, target_tokens.eq(pad)
+
+    target_masks = (
+        target_tokens.ne(pad) & target_tokens.ne(bos) & target_tokens.ne(eos)
+    )
+    target_score = target_tokens.clone().float().uniform_()
+    target_score.masked_fill_(~target_masks, 2.0)
+    target_length = target_masks.sum(1).float()
+    if uniform:
+        target_length = target_length * target_length.clone().uniform_()
+    else:
+        target_length = target_length * target_length.clone().fill_(ratio)
+    target_length = target_length + 1  # make sure to mask at least one token.
+
+    _, target_rank = target_score.sort(1)
+    target_cutoff = new_arange(target_rank) < target_length[:, None].long()
+    target_tokens.masked_fill_(
+        target_cutoff.scatter(1, target_rank, target_cutoff), unk
+    )
+
+    return target_tokens, target_tokens.eq(pad)
+
 
 def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, collapse=True, **unused):
     """
@@ -12,8 +57,8 @@ def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, colla
         net_output = model.forward(src_tokens, src_lengths, None)
     lprobs = model.get_normalized_probs(
         net_output, log_probs=True
-    )  # lprobs = F.log_softmax(net_output[0], dim=-1)
-    
+    )
+
     # eos_penalty = 1
     # if eos_penalty > 0.0:
     #     lprobs[:, :, blank_idx] -= eos_penalty
@@ -42,7 +87,7 @@ def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, colla
         lprobs,
         input_lengths,
     ):
-        lp = lp[:inp_l]  # (inp_l, vocab) #.unsqueeze(0)
+        lp = lp[:inp_l]
 
         toks = lp.argmax(dim=-1)
         score = torch.index_select(

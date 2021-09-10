@@ -1,4 +1,2 @@
 from .waitk_transformer_layers import *
-from .causal_conv_subsampler import CausalConv1dSubsampler
 from .sinkhorn_attention import SinkhornAttention
-from .sinkhorn_transformer_layers import SinkhornTransformerDecoderLayer

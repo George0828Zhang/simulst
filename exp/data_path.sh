@@ -1,7 +1,9 @@
 export SRC=en
-export TGT=es
-export DATA=/media/george/Data/mustc/${SRC}-${TGT}
+export TGT=zh
+export DATA_ROOT=/livingrooms/george/mustc
+export DATA=${DATA_ROOT}/${SRC}-${TGT}
 
-FAIRSEQ=`realpath ../fairseq`
+FAIRSEQ=`realpath ~/utility/fairseq`
 USERDIR=`realpath ../simultaneous_translation`
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
+. ~/envs/apex/bin/activate

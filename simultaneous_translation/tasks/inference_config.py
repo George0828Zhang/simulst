@@ -4,6 +4,7 @@ from argparse import Namespace
 
 logger = logging.getLogger(__name__)
 
+
 class InferenceConfig(object):
     """Wrapper class for bleu config YAML"""
 
@@ -30,7 +31,7 @@ class InferenceConfig(object):
     @property
     def eval_bleu(self):
         """evaluation with BLEU score in validation step."""
-        return self.config.get("eval_bleu", False)    
+        return self.config.get("eval_bleu", False)
 
     @property
     def eval_any(self):
@@ -44,11 +45,11 @@ class InferenceConfig(object):
 
     @property
     def post_process(self):
-        """post-process text by removing pre-processing such as BPE, letter segmentation, etc 
+        """post-process text by removing pre-processing such as BPE, letter segmentation, etc
         (valid options are: sentencepiece, wordpiece, letter, _EOW, none, otherwise treated as BPE symbol)
         """
         return self.config.get("post_process", None)
-    
+
     @property
     def print_samples(self):
         """print sample generations during validation"""
@@ -56,7 +57,7 @@ class InferenceConfig(object):
 
     @property
     def eval_bleu_args(self):
-        """args for bleu scoring"""        
+        """args for bleu scoring"""
         args = self.config.get("eval_bleu_args", {
             "sacrebleu_tokenizer": "13a",
             "sacrebleu_lowercase": False,
@@ -66,7 +67,7 @@ class InferenceConfig(object):
 
     @property
     def eval_wer_args(self):
-        """args for wer scoring"""        
+        """args for wer scoring"""
         args = self.config.get("eval_wer_args", {
             "wer_tokenizer": "13a",
             "wer_remove_punct": True,

@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import sentencepiece as sp
 from fairseq.data.audio.audio_utils import (
-    _convert_to_mono, _get_kaldi_fbank, _get_torchaudio_fbank
+    convert_to_mono, _get_kaldi_fbank, _get_torchaudio_fbank
 )
 import torch
 from tqdm import tqdm
@@ -78,7 +78,7 @@ def extract_fbank_features(
     if output_path is not None and output_path.is_file() and not overwrite:
         return
 
-    _waveform = _convert_to_mono(waveform, sample_rate)
+    _waveform = convert_to_mono(waveform, sample_rate)
     _waveform = _waveform * (2 ** 15)  # Kaldi compliance: 16-bit signed integers
     _waveform = _waveform.numpy()
 
@@ -133,7 +133,6 @@ def gen_config_yaml(
     audio_root: str = "",
     cmvn_type: str = "utterance",
     gcmvn_path: Optional[Path] = None,
-    pre_tokenizer: Optional[dict] = None,
 ):
     manifest_root = manifest_root.absolute()
     writer = S2TDataConfigWriter(manifest_root / yaml_filename)
@@ -155,10 +154,6 @@ def gen_config_yaml(
             "sentencepiece_model": (manifest_root / spm_filename).as_posix(),
         }
     )
-    if pre_tokenizer is not None:
-        writer.set_pre_tokenizer(
-            pre_tokenizer
-        )
     if prepend_tgt_lang_tag:
         writer.set_prepend_tgt_lang_tag(True)
     writer.set_sampling_alpha(sampling_alpha)
@@ -342,6 +337,3 @@ class S2TDataConfigWriter(object):
 
     def set_sampling_alpha(self, sampling_alpha: float = 1.0):
         self.config["sampling_alpha"] = sampling_alpha
-
-    def set_pre_tokenizer(self, pre_tokenizer: Dict[str, Any]):
-        self.config["pre_tokenizer"] = pre_tokenizer

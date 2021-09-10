@@ -1,10 +1,9 @@
-
+#!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import math
-import pdb
 from typing import Optional, Tuple
 
 import torch
@@ -36,8 +35,9 @@ def gumbel_sinkhorn(
         noise = noise_factor * sample_gumbel(log_alpha)
         log_alpha = log_alpha + noise.type_as(log_alpha)
     log_alpha = log_alpha / tau
-    sampled_perm_mat = log_sinkhorn_norm(log_alpha, n_iter)
+    sampled_perm_mat = log_sinkhorn_norm(log_alpha, n_iter) if n_iter > 0 else log_alpha.softmax(-1)
     return sampled_perm_mat
+
 
 class GaussianBlur(nn.Conv2d):
     """ Blur the attention map before sinkhorn normalization """
@@ -67,38 +67,6 @@ class GaussianBlur(nn.Conv2d):
             x.unsqueeze(1)
         ).squeeze(1)
 
-# class DepthwiseConv1dTBC(nn.Conv1d):
-#     """ Makes conv1d a drop-in replacement for Linear """
-#     def __init__(self, in_channels, out_channels, kernel_size, bias=True):
-#         super().__init__(
-#             in_channels, out_channels, kernel_size,
-#             padding=kernel_size // 2,
-#             groups=in_channels,
-#             bias=bias,
-#             padding_mode='replicate',
-#         )
-#         # nn.utils.weight_norm(self, dim=2)
-
-#     def forward(self, x):
-#         return super().forward(
-#             x.permute(1, 2, 0)  # TBC -> BCT
-#         ).permute(2, 0, 1)  # BCT -> TBC
-
-# class GaussianBlur(DepthwiseConv1dTBC):
-#     """ Makes conv1d a drop-in replacement for Linear """
-#     def __init__(self, in_channels, out_channels, kernel_size, bias=False):
-#         super().__init__(
-#             in_channels, out_channels, kernel_size,
-#             bias=bias,
-#         )
-#         mu = (kernel_size - 1) / 2.
-#         var = (kernel_size / 2.)**2
-#         gaussian = (1. / (2. * math.pi * var))**0.5 * torch.exp(
-#             -(torch.arange(kernel_size) - mu)**2. / (2 * var)
-#         ).expand_as(self.weight)
-
-#         self.weight.data = gaussian
-#         self.weight.data.requires_grad = False
 
 class SinkhornAttention(nn.Module):
     """Single head attention with sinkhorn normalization.
@@ -173,6 +141,17 @@ class SinkhornAttention(nn.Module):
             self.blurr = None
 
         self.reset_parameters()
+
+    def extra_repr(self):
+        s = "dim={}, bucket_size={}, tau={}, iters={}, noise_factor={}, energy_fn={}".format(
+            self.embed_dim,
+            self.bucket_size,
+            self.tau,
+            self.iters,
+            self.noise_factor,
+            self.energy_fn,
+        )
+        return s
 
     def reset_parameters(self):
         # Empirically observed the convergence to be much better with

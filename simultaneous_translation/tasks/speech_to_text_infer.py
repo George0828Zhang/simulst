@@ -8,7 +8,6 @@ import torch
 import numpy as np
 from fairseq import metrics, utils
 from fairseq.tasks import register_task, LegacyFairseqTask
-from fairseq.tasks.speech_to_text import SpeechToTextTask
 from fairseq.logging.meters import safe_round
 
 from fairseq.scoring.bleu import SacrebleuScorer
@@ -18,13 +17,15 @@ logger = logging.getLogger(__name__)
 
 from .inference_config import InferenceConfig
 from .waitk_sequence_generator import WaitkSequenceGenerator
+from .speech_text_joint import SpeechTextJointToTextTask
 EVAL_BLEU_ORDER = 4
 
+
 @register_task("speech_to_text_infer")
-class SpeechToTextWInferenceTask(SpeechToTextTask):
+class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
     @staticmethod
     def add_args(parser):
-        SpeechToTextTask.add_args(parser)
+        SpeechTextJointToTextTask.add_args(parser)
 
         parser.add_argument(
             "--inference-config-yaml",
@@ -32,23 +33,20 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             default="inference.yaml",
             help="Configuration YAML filename for bleu or wer eval (under exp/)",
         )
-
         parser.add_argument(
-            "--from-encoder", action="store_true",
-            help=(
-                'decode prediction from model.encoder.'
-            ),
+            "--do-asr",
+            action="store_true",
+            help="train asr with source text.",
         )
 
-    def __init__(self, args, tgt_dict):
-        super().__init__(args, tgt_dict)
+    def __init__(self, args, src_dict, tgt_dict, infer_tgt_lang_id=None):
+        super().__init__(args, src_dict, tgt_dict, infer_tgt_lang_id=infer_tgt_lang_id)
 
+        self.do_asr = args.do_asr
         self.inference_cfg = InferenceConfig(args.inference_config_yaml)
         # for speech_to_text, bpe & tokenizer configs are in S2TDataCfg, so passing None is ok
         # bpe_tokenizer is handled by post_process.
-        self.pre_tokenizer = self.build_tokenizer(None)
-
-        self.from_encoder = getattr(args, "from_encoder", False)
+        self.pre_tokenizer = self.build_src_tokenizer(None) if self.do_asr else self.build_tokenizer(None)
 
     def build_model(self, args):
         model = super().build_model(args)
@@ -88,7 +86,34 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             self, models, args, seq_gen_cls=seq_gen_cls, extra_gen_cls_kwargs=extra_gen_cls_kwargs
         )
 
+    def process_sample(self, sample):
+        """
+        Need to process here instead of criterion, because in inference time criterion is not called.
+        (Pdb) sample['net_input'].keys()
+        dict_keys(['src_tokens', 'src_lengths', 'prev_output_tokens', 'src_txt_tokens', 'src_txt_lengths'])
+        (Pdb) sample.keys()
+        dict_keys(['id', 'net_input', 'target', 'target_lengths', 'ntokens', 'nsentences'])
+        """
+        if self.do_asr:
+            sample["target"] = sample['net_input']['src_txt_tokens']
+            sample["target_lengths"] = sample['net_input']['src_txt_lengths']
+            # sample["ntokens"]
+            del sample["net_input"]['src_txt_tokens']
+            del sample["net_input"]['src_txt_lengths']
+            # CTC asr does not need prev_output_tokens
+            del sample["net_input"]['prev_output_tokens']
+
+        return sample
+
+    def train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ):
+        sample = self.process_sample(sample)
+        return super().train_step(
+            sample, model, criterion, optimizer, update_num, ignore_grad=False)
+
     def valid_step(self, sample, model, criterion):
+        sample = self.process_sample(sample)
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.inference_cfg.eval_any:
             _metrics = self._inference_with_metrics(self.sequence_generator, sample, model)
@@ -115,7 +140,6 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             # one-pass decoding
             if hasattr(self, 'blank_symbol'):
                 sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
-            sample["net_input"]["from_encoder"] = self.from_encoder
             return models[0].generate(**sample["net_input"])
         else:
             # incremental decoding
@@ -124,8 +148,6 @@ class SpeechToTextWInferenceTask(SpeechToTextTask):
             )
 
     def _inference_with_metrics(self, generator, sample, model):
-        import sacrebleu
-        import editdistance
 
         def decode(toks, escape_unk=False):
             s = self.tgt_dict.string(

@@ -1,12 +1,13 @@
 torch>=1.8.1
 torchaudio>=0.8.1
+g2p_en
+submitit
 pandas
 soundfile
 editdistance
-sacrebleu
+sacrebleu==1.5.1
 sacremoses
 sentencepiece
 tqdm
 tensorboard
 tensorboardX
-entmax
