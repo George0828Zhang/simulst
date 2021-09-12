@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 DATA_ROOT=/livingrooms/george/mustc
-WORKERS=8
-LANGS="de es zh"
+LANGS="de es fr it nl pt ro ru"
 VOCAB=src_dict.txt
 CONF=config_asr.yaml
 

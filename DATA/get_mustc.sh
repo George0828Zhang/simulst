@@ -7,7 +7,7 @@ vtype=unigram
 if [ "$TGT" == "zh" ]; then
   EXTRA="--jieba"
 fi
-WORKERS=8
+WORKERS=1
 
 UPDATE=$(realpath ../scripts/update_config.py)
 FAIRSEQ=~/utility/fairseq
@@ -22,9 +22,9 @@ if [ -f ${feats} ]; then
   echo "${feats} already exists. It is likely that you set the wrong language which is already processed."
   echo "Please change data root or clear ${feats} before continuing."
   echo "Alternatively uncomment the command below to re-process manifest only."
-  python prep_mustc_data.py \
-    --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-    --langs $TGT --manifest-only ${EXTRA}
+  # python prep_mustc_data.py \
+  #   --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
+  #   --langs $TGT --manifest-only ${EXTRA}
 else
   echo "processing ${OUTDIR}"
   python prep_mustc_data.py \
