@@ -26,6 +26,8 @@ if __name__ == "__main__":
             config["transforms"][split][0] = f"{args.cmvn_type}_cmvn"
     if args.rm_bpe_tokenizer and "bpe_tokenizer" in config:
         del config["bpe_tokenizer"]
+    if args.vocab_filename is not None:
+        config["vocab_filename"] = args.vocab_filename
 
     # print(config)
     with open(args.path, "w") as f:

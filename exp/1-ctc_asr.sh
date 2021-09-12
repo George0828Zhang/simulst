@@ -7,8 +7,8 @@ CHECKPOINT=checkpoints/mustc_fr_asr_transformer_s.pt
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${CHECKPOINT} \
     --config-yaml config_asr.yaml \
-    --train-subset train_de_asr,train_es_asr,train_zh_asr \
-    --valid-subset dev_de_asr,dev_es_asr,dev_zh_asr \
+    --train-subset train_de_asr,train_es_asr,train_fr_asr,train_it_asr,train_nl_asr,train_pt_asr,train_ro_asr,train_ru_asr \
+    --valid-subset dev_de_asr,dev_es_asr \
     --skip-invalid-size-inputs-valid-test \
     --max-tokens 80000 \
     --update-freq 4 \
@@ -29,7 +29,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --keep-best-checkpoints 5 \
     --patience 50 \
     --log-format simple --log-interval 50 \
-    --num-workers 8 \
+    --num-workers 4 \
     --fp16 \
     --seed 1
     # --max-positions-text 1024 \
