@@ -157,7 +157,7 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
         self.src_dict = src_dict
         self.ctc_projection = ctc_projection
 
-    def forward(self, src_tokens, src_lengths, return_all_hiddens=False):
+    def forward(self, src_tokens, src_lengths, return_all_hiddens=False, **unused):
         """ identical to original S2TEncoder (for now) """
         x, input_lengths = self.subsample(src_tokens, src_lengths)
         x = self.embed_scale * x
