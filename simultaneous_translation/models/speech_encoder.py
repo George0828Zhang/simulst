@@ -213,6 +213,7 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
 
         for w in ignores:
             if w not in state_dict:
+                logger.warning("Ignoring CTC projection weights! Make sure this is intended...")
                 state_dict[w] = cur_state_dict[w]
 
         return super().load_state_dict(state_dict, strict=strict)

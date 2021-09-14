@@ -12,20 +12,20 @@ from fairseq.logging.meters import safe_round
 
 from fairseq.scoring.bleu import SacrebleuScorer
 from fairseq.scoring.wer import WerScorer
+from examples.speech_text_joint_to_text.tasks.speech_text_joint import SpeechTextJointToTextTask
 
 logger = logging.getLogger(__name__)
 
 from .inference_config import InferenceConfig
 from .waitk_sequence_generator import WaitkSequenceGenerator
-from .speech_text_joint import SpeechTextJointToTextTask
 EVAL_BLEU_ORDER = 4
 
 
 @register_task("speech_to_text_infer")
 class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
-    @staticmethod
-    def add_args(parser):
-        SpeechTextJointToTextTask.add_args(parser)
+    @classmethod
+    def add_args(cls, parser):
+        super(SpeechToTextWInferenceTask, cls).add_args(parser)
 
         parser.add_argument(
             "--inference-config-yaml",

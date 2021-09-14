@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional
 from fairseq import metrics
+from fairseq.logging.meters import safe_round
 from fairseq.criterions import (
     register_criterion,
 )
@@ -20,7 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def calc_recall_precision(predict, target, pad_idx=1, eps=1e-8):
+def calc_recall_precision(predict, target, blank_idx=0, pad_idx=1, eps=1e-8):
     N, S = predict.size()
     N, T = target.size()
 
@@ -38,9 +39,12 @@ def calc_recall_precision(predict, target, pad_idx=1, eps=1e-8):
     pred_words = collect(inverse[:, :S])
     target_words = collect(inverse[:, S:])
 
+    # 1. target does not have blank. 2. predict does not have pad
+    # therefore, we only need to adjust the denominator
+
     match = torch.min(target_words, pred_words).sum(-1)
     recall = match / (target.ne(pad_idx).sum(-1) + eps)
-    precision = match / (predict.ne(pad_idx).sum(-1) + eps)
+    precision = match / (predict.ne(blank_idx).sum(-1) + eps)
     return recall.sum(), precision.sum()
 
 
@@ -84,7 +88,11 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
                 logits = model.output_layer(x.permute(1, 0, 2))
                 y_pred = logits.argmax(-1)
                 recall, precision = calc_recall_precision(
-                    y_pred, sample["target"], pad_idx=self.pad_idx)
+                    y_pred,
+                    sample["target"],
+                    blank_idx=self.blank_idx,
+                    pad_idx=self.pad_idx
+                )
                 blank_rate = y_pred.eq(self.blank_idx).float().mean(-1).sum()
         else:
             recall = 0
@@ -177,11 +185,22 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
         blank_rate = sum_logs("blank_rate")
 
         metrics.log_scalar(
-            "recall", recall / nsentences, nsentences, round=3
-        )
-        metrics.log_scalar(
-            "precision", precision / nsentences, nsentences, round=3
-        )
-        metrics.log_scalar(
             "blank_rate", blank_rate / nsentences, nsentences, round=3
+        )
+
+        metrics.log_scalar("_recall", recall / nsentences, nsentences)
+        metrics.log_scalar("_precision", precision / nsentences, nsentences)
+
+        def calc_f1(meters):
+            """ this is approx. """
+            r = meters["_recall"].avg
+            p = meters["_precision"].avg
+            if r + p > 0:
+                return safe_round(2 * p * r / (p + r), 3)
+            else:
+                return 0
+
+        metrics.log_derived(
+            "f1",
+            calc_f1,
         )
