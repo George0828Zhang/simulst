@@ -1,37 +1,101 @@
 #!/usr/bin/env bash
-TASK=wait_9
-SPLIT=dev #tst-COMMON
-EVAL_DATA=./data
-AGENT=./agents/waitk_fixed_predecision_agent.py
-EXP=../exp
-. ${EXP}/data_path.sh
-CONF=$DATA/config_st.yaml
-CHECKDIR=${EXP}/checkpoints/${TASK}
-AVG=true
+# credits: https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  key="$1"
 
-export CUDA_VISIBLE_DEVICES=0
+  case $key in
+    -a|--agent)
+      AGENT="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -m|--model)
+      MODEL="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -k|--waitk)
+      WAITK="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -e|--expdir)
+      EXP="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -s|--source)
+      SRC_FILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -t|--target)
+      TGT_FILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    *)    # unknown option
+      POSITIONAL+=("$1") # save it in an array for later
+      shift # past argument
+      ;;
+  esac
+done
 
-if [[ $AVG == "true" ]]; then
-  CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-  python ../scripts/average_checkpoints.py \
-    --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-    --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
-else
-  CHECKPOINT_FILENAME=checkpoint_best.pt
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+
+source ${EXP}/data_path.sh
+
+CHECKPOINT=${EXP}/checkpoints/${MODEL}/checkpoint_best.pt
+SPM_PREFIX=${DATA}/spm_unigram8000_st
+
+PORT=12345
+WORKERS=2
+BLEU_TOK=13a
+UNIT=word
+DATANAME=$(basename $(dirname ${DATA}))
+OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.${DATANAME}
+mkdir -p ${OUTPUT}
+
+if [[ ${TGT} == "zh" ]]; then
+  BLEU_TOK=zh
+  UNIT=char
+  NO_SPACE="--no-space"
 fi
 
-SRC_LIST=${EVAL_DATA}/${SPLIT}.wav_list
-TGT_FILE=${EVAL_DATA}/${SPLIT}.${TGT}
-OUTPUT=${TASK}.en-${TGT}.results
 simuleval \
   --agent ${AGENT} \
   --user-dir ${USERDIR} \
-  --source ${SRC_LIST} \
+  --source ${SRC_FILE} \
   --target ${TGT_FILE} \
   --data-bin ${DATA} \
-  --config ${CONF} \
-  --model-path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
+  --config config_st.yaml \
+  --model-path ${CHECKPOINT} \
+  --tgt-splitter-path ${SPM_PREFIX}.model \
   --output ${OUTPUT} \
-  --scores \
-  --gpu \
-  --test-waitk 9
+  --sacrebleu-tokenizer ${BLEU_TOK} \
+  --eval-latency-unit ${UNIT} \
+  --chunked-read 3 \
+  ${NO_SPACE} \
+  --scores
+
+# simuleval \
+#   --agent ${AGENT} \
+#   --user-dir ${USERDIR} \
+#   --source ${SRC_FILE} \
+#   --target ${TGT_FILE} \
+#   --data-bin ${DATA} \
+#   --model-path ${CHECKPOINT} \
+#   --src-splitter-path ${SPM_PREFIX}_${SRC}.model \
+#   --tgt-splitter-path ${SPM_PREFIX}_${TGT}.model \
+#   --output ${OUTPUT} \
+#   --incremental-encoder \
+#   --sacrebleu-tokenizer ${BLEU_TOK} \
+#   --eval-latency-unit ${UNIT} \
+#   --segment-type ${UNIT} \
+#   ${NO_SPACE} \
+#   --scores \
+#   --test-waitk ${WAITK} \
+#   --port ${PORT} \
+#   --workers ${WORKERS}

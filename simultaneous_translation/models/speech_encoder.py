@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 import logging
 from typing import Dict, List, Optional, Tuple
 # from collections import OrderedDict
@@ -223,5 +225,4 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
     "speech_encoder", "speech_encoder_s"
 )
 def speech_encoder_s(args):
-    # args.encoder_log_penalty = True  # force log penalty
     s2t_transformer_s(args)

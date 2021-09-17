@@ -16,7 +16,6 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 import soundfile as sf
-# from examples.speech_to_text.data_utils import (
 from data_utils import (
     create_zip,
     extract_fbank_features,
@@ -93,8 +92,11 @@ class MUSTC(Dataset):
                     )
                 )
 
-    def __getitem__(self, n: int) -> Tuple[torch.Tensor, int, str, str, str, str]:
-        wav_path, offset, n_frames, sr, src_utt, tgt_utt, spk_id, utt_id = self.data[n]
+    def __getitem__(
+        self, n: int
+    ) -> Tuple[torch.Tensor, int, str, str, str, str]:
+        wav_path, offset, n_frames, sr, src_utt, tgt_utt, spk_id, \
+            utt_id = self.data[n]
         waveform, _ = get_waveform(wav_path, frames=n_frames, start=offset)
         waveform = torch.from_numpy(waveform)
         return waveform, sr, src_utt, tgt_utt, spk_id, utt_id
@@ -129,7 +131,6 @@ def process(args):
                         (feature_root / f"{utt_id}.npy").as_posix(),
                         features
                     )
-
                     if split == 'train' and args.cmvn_type == "global":
                         if len(gcmvn_feature_list) < args.gcmvn_max_num:
                             gcmvn_feature_list.append(features)
@@ -146,21 +147,18 @@ def process(args):
             print("ZIPing features...")
             create_zip(feature_root, zip_path)
         print("Fetching ZIP manifest...")
-        zip_manifest = get_zip_manifest(zip_path)
+        audio_paths, audio_lengths = get_zip_manifest(zip_path)
         # Generate TSV manifest
         print("Generating manifest...")
-
         train_text = []
         for split in MUSTC.SPLITS:
             is_train_split = split.startswith("train")
             manifest = {c: [] for c in MANIFEST_COLUMNS}
             dataset = MUSTC(args.data_root, lang, split)
-            for wav, sr, src_utt, tgt_utt, speaker_id, utt_id in tqdm(dataset):
+            for _, _, src_utt, tgt_utt, speaker_id, utt_id in tqdm(dataset):
                 manifest["id"].append(utt_id)
-                manifest["audio"].append(zip_manifest[utt_id])
-                duration_ms = int(wav.size(1) / sr * 1000)
-                manifest["n_frames"].append(int(1 + (duration_ms - 25) / 10))
-
+                manifest["audio"].append(audio_paths[utt_id])
+                manifest["n_frames"].append(audio_lengths[utt_id])
                 manifest["src_text"].append(src_utt)
                 if lang == "zh" and args.jieba:
                     tgt_utt = " ".join(jieba.cut(tgt_utt, cut_all=False))
@@ -187,7 +185,7 @@ def process(args):
         # Generate config YAML
         gen_config_yaml(
             cur_root,
-            spm_filename_prefix + ".model",
+            spm_filename=spm_filename_prefix + ".model",
             yaml_filename=f"config_{args.task}.yaml",
             specaugment_policy="lb",
             cmvn_type=args.cmvn_type,

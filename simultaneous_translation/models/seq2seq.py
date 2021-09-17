@@ -23,6 +23,7 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
+from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerModel,
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 @register_model("ws_transformer")
 class WeightedShrinkingTransformerModel(S2TTransformerModel):
     """
-    causal encoder (+ semantic encoder) + monotonic decoder
+    causal encoder (+ semantic encoder) + normal decoder
     """
     @staticmethod
     def add_args(parser):
@@ -103,17 +104,22 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
             padding_idx = dictionary.pad()
             return Embedding(num_embeddings, embed_dim, padding_idx)
 
-        ctc_projection = nn.Linear(
-            args.encoder_embed_dim,
-            len(task.source_dictionary),
-            bias=False
-        )
         encoder_embed_tokens = build_embedding(
             task.source_dictionary, args.encoder_embed_dim
         )
         decoder_embed_tokens = build_embedding(
             task.target_dictionary, args.decoder_embed_dim
         )
+        ctc_projection = nn.Linear(
+            encoder_embed_tokens.weight.shape[1],
+            encoder_embed_tokens.weight.shape[0],
+            bias=False,
+        )
+        nn.init.normal_(
+            ctc_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
+        )
+        if getattr(args, "share_encoder_input_output_embed", False):
+            ctc_projection.weight = encoder_embed_tokens.weight
         encoder = cls.build_encoder(args, task, encoder_embed_tokens, ctc_projection)
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
         return cls(encoder, decoder)
@@ -134,21 +140,23 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
             src_txt_tokens=src_txt_tokens,
             src_txt_lengths=src_txt_lengths,
         )
-        logits, extra = self.decoder(
+        logits, decoder_out = self.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        if extra is None:
-            extra = {}
-        extra.update({
-            # "padding_mask": padding_mask,
-            "encoder_out": encoder_out
-        })
+        extra = {
+            "encoder_out": encoder_out,
+            "decoder_out": decoder_out,
+        }
         return logits, extra
 
     @property
     def output_layer(self):
         """ convenient function for accuracy calculation """
         return self.encoder.ctc_projection
+
+    def upgrade_state_dict_named(self, state_dict, name):
+        """ temp fix for layer index error when loading check"""
+        pass
 
 
 class CausalTransformerEncoder(TransformerEncoder):
@@ -318,6 +326,9 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         self.speech_encoder = speech_encoder
         self.text_encoder = text_encoder
         self.do_weighted_shrink = args.do_weighted_shrink
+        self.dropout_module = FairseqDropout(
+            args.dropout, module_name=self.__class__.__name__
+        )
 
     @property
     def src_dict(self):
@@ -336,7 +347,9 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         # encode speech
         encoder_out = self.speech_encoder(
             src_tokens=src_tokens, src_lengths=src_lengths)
-        encoder_out = self.weighted_shrinking(encoder_out)
+        encoder_out = self.forward_ctc_projection(encoder_out)
+        if self.do_weighted_shrink:
+            encoder_out = self.weighted_shrinking(encoder_out)
         # encode text
         if self.text_encoder is not None:
             src_tokens = encoder_out["encoder_out"][0].transpose(0, 1)
@@ -350,31 +363,21 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
                 encoder_out[key] = text_out[key]
         return encoder_out
 
-    def weighted_shrinking(self, encoder_out, return_all_hiddens=False):
-        blank = self.src_dict.bos()
-        pad = self.src_dict.pad()
-
-        # speech mask
-        speech_padding_mask = encoder_out["encoder_padding_mask"][0] \
-            if len(encoder_out["encoder_padding_mask"]) > 0 else None
-
-        # speech hidden states
+    def forward_ctc_projection(self, encoder_out):
         speech_states = encoder_out["encoder_out"][0]
-        encoder_states = encoder_out["encoder_states"]
-        if return_all_hiddens:
-            encoder_states.append(speech_states)
-
         # ctc projection
         logits = self.speech_encoder.ctc_projection(
             speech_states).transpose(0, 1)
 
-        if not self.do_weighted_shrink:
-            encoder_out.update({
-                "encoder_logits": [logits],
-                "encoder_states": encoder_states,  # List[T x B x C]
-                "speech_padding_mask": encoder_out["encoder_padding_mask"]
-            })
-            return encoder_out
+        encoder_out.update({
+            "encoder_logits": [logits],
+            "speech_padding_mask": encoder_out["encoder_padding_mask"]
+        })
+        return encoder_out
+
+    def _weighted_shrinking_op(self, speech_states, logits, speech_padding_mask=None):
+        blank = self.src_dict.bos()
+        pad = self.src_dict.pad()
 
         B, S, C = logits.size()
         if speech_padding_mask is not None:
@@ -411,6 +414,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         attn_weights = utils.softmax(
             attn_weights, dim=-1
         ).type_as(confidence).nan_to_num(nan=0.)
+        attn_weights = self.dropout_module(attn_weights)
 
         # shrink speech states
         # (B, S', S) x (B, S, D) -> (B, S', D) -> (S', B, D)
@@ -429,6 +433,39 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
             shrinked_states = shrinked_states[:shrink_lengths.max(), ...]
             del segment_ids
 
+        return shrinked_states, shrink_lengths
+
+    def weighted_shrinking(self, encoder_out):
+        # blank = self.src_dict.bos()
+        # pad = self.src_dict.pad()
+
+        # speech mask
+        speech_padding_mask = encoder_out["encoder_padding_mask"][0] \
+            if len(encoder_out["encoder_padding_mask"]) > 0 else None
+
+        # speech hidden states
+        speech_states = encoder_out["encoder_out"][0]
+        # encoder_states = encoder_out["encoder_states"]
+        # if return_all_hiddens:
+        #     encoder_states.append(speech_states)
+
+        # ctc projection
+        # logits = self.speech_encoder.ctc_projection(
+        #     speech_states).transpose(0, 1)
+        logits = encoder_out["encoder_logits"][0]
+
+        # if not self.do_weighted_shrink:
+        #     encoder_out.update({
+        #         "encoder_logits": [logits],
+        #         # "encoder_states": encoder_states,  # List[T x B x C]
+        #         "speech_padding_mask": encoder_out["encoder_padding_mask"]
+        #     })
+        #     return encoder_out
+
+        B, S, C = logits.size()
+        shrinked_states, shrink_lengths = self._weighted_shrinking_op(
+            speech_states, logits, speech_padding_mask)
+
         encoder_padding_mask = lengths_to_padding_mask(shrink_lengths)
         # calculate shrink rate
         src_lengths = shrink_lengths.new_full(
@@ -438,7 +475,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
             "encoder_out": [shrinked_states],  # T x B x C
             "encoder_padding_mask": [encoder_padding_mask],  # B x T
             "encoder_embedding": [],  # B x T x C
-            "encoder_states": encoder_states,  # List[T x B x C]
+            "encoder_states": encoder_out["encoder_states"],  # List[T x B x C]
             "encoder_logits": [logits],
             "speech_padding_mask": [speech_padding_mask],
             "src_tokens": [],
@@ -451,6 +488,9 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     "ws_transformer", "ws_transformer_s"
 )
 def ws_transformer_s(args):
-    # args.encoder_log_penalty = True  # force log penalty
+    args.encoder_layers = getattr(args, "encoder_layers", 12)
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
+    args.decoder_layers = getattr(args, "decoder_layers", 6)
+    args.share_encoder_input_output_embed = True
+    args.share_decoder_input_output_embed = True
     s2t_transformer_s(args)

@@ -38,11 +38,11 @@ else
     echo "done. Total: $(cat ${DATA_DIR}/${VOCAB} | wc -l).first few tokens:"
     head ${DATA_DIR}/${VOCAB}
 
-    echo "create symbolic links to asr dict for all datasets"
+    echo "copy asr dict for all datasets"
     for l in $LANGS; do
         f=${DATA_DIR}/${VOCAB}
         dest=${DATA_ROOT}/en-${l}/${VOCAB}
-        ln -s ${f} ${dest}
+        cp ${f} ${dest}
     done
 fi
 
