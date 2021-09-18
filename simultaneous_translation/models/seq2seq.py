@@ -263,7 +263,7 @@ class CausalTransformerEncoder(TransformerEncoder):
         for layer in self.layers:
             x = layer(
                 x,
-                encoder_padding_mask=encoder_padding_mask,
+                encoder_padding_mask=encoder_padding_mask if encoder_padding_mask.any() else None,
                 incremental_state=incremental_state,
             )
             if return_all_hiddens:

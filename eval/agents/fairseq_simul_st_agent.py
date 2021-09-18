@@ -286,8 +286,6 @@ class FairseqSimulSTAgent(SpeechAgent):
                 tok_idx,
                 "sentencepiece",
             )
-            if self.pre_tokenizer is not None:
-                hyp = self.pre_tokenizer.decode(hyp)
             return hyp
 
         # if force finish, there will be None's
@@ -299,7 +297,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         if (
             (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
             or
-            (states.finish_read() and len(states.units.target) > self.max_len(src_len))
+            (states.finish_read() and len(states.units.target) > self.max_len)
         ):
             hyp = decode(unit_queue)
             string_to_return = ([hyp] if hyp else []) + [DEFAULT_EOS]
@@ -336,7 +334,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         if getattr(states, "encoder_states", None) is not None:
             encoder_len = states.encoder_states["encoder_out"][0].size(0)
 
-        logger.info(f"{source_len},{speech_len},{shrunk_len},{encoder_len}")
+        logger.debug(f"{source_len},{speech_len},{shrunk_len},{encoder_len}")
 
         if source_len == 0:
             return
@@ -350,16 +348,15 @@ class FairseqSimulSTAgent(SpeechAgent):
         # states.encoder_states = self.model.encoder(src_indices, src_lengths)
 
         # Step 1: get new speech states
+        sub_source_len = self.model.encoder.speech_encoder.subsample.get_out_seq_lens_tensor(src_lengths).item()
         encoder_out = self.model.encoder.speech_encoder(
             src_tokens=src_indices,
             src_lengths=src_lengths,
             incremental_state=states.enc_incremental_states["speech"],
-            incremental_step=source_len - speech_len,
+            incremental_step=sub_source_len - speech_len,
         )
         encoder_out = self.model.encoder.forward_ctc_projection(encoder_out)
         logits = encoder_out["encoder_logits"][0]
-        # import pdb
-        # pdb.set_trace()
         states.speech_states = torch.cat(
             (
                 states.speech_states,
@@ -390,7 +387,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         # update shrunk states
         if cutoff > shrunk_len:
             update_speech_states = states.speech_states[shrunk_len:cutoff, ...]
-            update_logits = states.speech_logits[shrunk_len:cutoff, ...]
+            update_logits = states.speech_logits[:, shrunk_len:cutoff, :]
             # Step 3: shrink new segments
             shrunk_states, shrink_lengths = self.model.encoder._weighted_shrinking_op(
                 update_speech_states, update_logits)
@@ -445,18 +442,18 @@ class FairseqSimulSTAgent(SpeechAgent):
             ).unsqueeze(0)
         )
 
-        states.incremental_states["steps"] = {
+        states.dec_incremental_states["steps"] = {
             "src": states.encoder_states["encoder_out"][0].size(0),
             "tgt": 1 + len(states.units.target),
         }
 
-        states.incremental_states["online"] = {
+        states.dec_incremental_states["online"] = {
             "only": torch.tensor(not states.finish_read())}
 
         x, outputs = self.model.decoder.forward(
             prev_output_tokens=tgt_indices,
             encoder_out=states.encoder_states,
-            incremental_state=states.incremental_states,
+            incremental_state=states.dec_incremental_states,
         )
 
         states.decoder_out = x
@@ -488,7 +485,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         ):
             # If we want to force finish the translation
             # (don't stop before finish reading), return a None
-            # self.model.decoder.clear_cache(states.incremental_states)
+            # self.model.decoder.clear_cache(states.dec_incremental_states)
             index = None
 
         return index

@@ -159,20 +159,69 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
         self.src_dict = src_dict
         self.ctc_projection = ctc_projection
 
-    def forward(self, src_tokens, src_lengths, return_all_hiddens=False, **unused):
+    def forward(
+        self,
+        src_tokens,
+        src_lengths: Optional[torch.Tensor] = None,  # not used
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        incremental_step: Optional[int] = 1,
+        return_all_hiddens: bool = False,
+        padding_mask: Optional[torch.Tensor] = None,
+        **unused
+    ):
         """ identical to original S2TEncoder (for now) """
         x, input_lengths = self.subsample(src_tokens, src_lengths)
         x = self.embed_scale * x
 
         encoder_padding_mask = lengths_to_padding_mask(input_lengths)
-        positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
-        x += positions
+        # positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
+        positions = None
+        if self.embed_positions is not None:
+            # incremental_state for embed_positions is designed for single step.
+            # # slow
+            # positions = self.embed_positions(
+            #     src_tokens,  # incremental_state=incremental_state
+            # )
+            # fast
+            positions = self.embed_positions(
+                encoder_padding_mask,
+                incremental_state=incremental_state,
+                timestep=torch.LongTensor(
+                    [encoder_padding_mask.size(1) - incremental_step])
+            )
+            if incremental_step > 1:
+                for i in range(1, incremental_step):
+                    timestep = encoder_padding_mask.size(
+                        1) - incremental_step + i
+                    positions = torch.cat(
+                        (
+                            positions,
+                            self.embed_positions(
+                                encoder_padding_mask,
+                                incremental_state=incremental_state,
+                                timestep=torch.LongTensor([timestep])
+                            )
+                        ), dim=1
+                    )
+            positions = positions.transpose(0, 1)
+
+        if incremental_state is not None:
+            x = x[-incremental_step:, :]
+            if positions is not None:
+                positions = positions[-incremental_step:, :]
+
+        if positions is not None:
+            x += positions
         x = self.dropout_module(x)
 
         encoder_states = []
 
         for layer in self.transformer_layers:
-            x = layer(x, encoder_padding_mask)
+            x = layer(
+                x,
+                encoder_padding_mask=encoder_padding_mask if encoder_padding_mask.any() else None,
+                incremental_state=incremental_state,
+            )
             if return_all_hiddens:
                 encoder_states.append(x)
 
