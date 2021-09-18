@@ -11,3 +11,4 @@ sentencepiece
 tqdm
 tensorboard
 tensorboardX
+asr-evaluation

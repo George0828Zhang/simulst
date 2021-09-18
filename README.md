@@ -87,6 +87,12 @@ We also need an offline ASR model to initialize our ST models. Note that the enc
 bash 1-offline_asr.sh # autoregressive ASR
 ```
 
+|Lang|de|es|fr|it|nl|pt|ro|ru|Download|
+|-|-|-|-|-|-|-|-|-|-|
+|dev PER|7.894|14.250|13.890|13.486|13.940|8.318|13.882|14.181|[checkpoints](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EXzSb9gOJXZMm7wjJCxj49gBNvMalGfTeo8zY05Cte4BUg?e=IXPjb4)|
+|tst-COMMON PER|10.572|12.274|12.334|12.359|12.211|12.350|12.346|12.337|[src_dict.txt](https://ntucc365-my.sharepoint.com/:t:/g/personal/r09922057_ntu_edu_tw/EaZptzl7rT1Ch67JzdRXLGABUnKLy1aPbmfCnERgyITqVQ?e=28hG83)|
+|tst-HE PER|8.573|9.339|9.317|9.507|10.332|10.153|10.046|9.532|-|
+
 ### Pretrained models
 |arch/file|en-es|en-de|
 |:-:|-|-|
