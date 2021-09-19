@@ -6,6 +6,6 @@ generation_args:
 post_process: sentencepiece
 print_samples: true
 eval_bleu_args:
-  sacrebleu_tokenizer: zh
+  sacrebleu_tokenizer: 13a
   sacrebleu_lowercase: false
   sacrebleu_char_level: false
