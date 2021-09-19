@@ -99,6 +99,9 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
     @classmethod
     def build_model(cls, args, task):
         """Build a new model instance."""
+
+        ws_transformer_s(args)
+
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
             padding_idx = dictionary.pad()
@@ -345,8 +348,6 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         src_txt_lengths,  # unused
     ):
         # encode speech
-        # from fairseq.nan_detector import NanDetector
-        # with NanDetector(self.speech_encoder, backward=False):
         encoder_out = self.speech_encoder(
             src_tokens=src_tokens, src_lengths=src_lengths)
         encoder_out = self.forward_ctc_projection(encoder_out)
@@ -405,7 +406,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         # attn_weights = utils.fill_with_neg_inf(
         #     logits.new_empty((B, shrink_lengths.max(), S))
         # )
-        neg_inf = -1e8 if logits.dtype == torch.float32 else -1e4
+        neg_inf = -torch.finfo(logits.dtype).max
         attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
         # compute non-blank confidence
         confidence = 1 - logits.softmax(-1)[..., blank]

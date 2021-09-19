@@ -1,5 +1,4 @@
 # Simultaneous Speech Translation
-Proposed: Learning to translate monotonically by optimal transport.
 
 ## Setup
 
@@ -9,6 +8,7 @@ git clone https://github.com/pytorch/fairseq.git
 cd fairseq
 git checkout 8b861be
 python setup.py build_ext --inplace
+pip install .
 ```
 2. (Optional) [Install](docs/apex_installation.md) apex for faster mixed precision (fp16) training.
 3. Install dependencies
@@ -22,23 +22,30 @@ This section introduces the data preparation for training and evaluation. Follow
 1. [Download](https://ict.fbk.eu/must-c/) and unpack the package.
 ```bash
 cd ${DATA_ROOT}
-tar -zxvf MUSTC_v1.0_en-es.tar.gz
+tar -zxvf MUSTC_v1.2_en-zh.tar.gz
 ```
-2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the path of speech data (the directory of previous step).
+2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the root path of speech data (the directory of previous step).
 3. Preprocess data with
 ```bash
 cd DATA
-bash get_mustc.sh
+bash get_mustc.sh ${lang}
 ```
-The output manifest files should appear under `${DATA_ROOT}/en-es/`. 
+The output manifest files should appear under `${DATA_ROOT}/en-${lang}/`.
 
-Configure environment and path in `exp/data_path.sh` before training:
+4. In `DATA/get_mustc_asr.sh`, set `DATA_ROOT` and `LANGS`. Then preprocess data for joint asr with 
+```bash
+bash get_mustc_asr.sh
+```
+The output manifest files should appear under `${DATA_ROOT}/joint/`.
+
+5. Configure environment and path in `exp/data_path.sh` before training:
 ```bash
 export SRC=en
-export TGT=es
-export DATA=/media/george/Data/mustc/${SRC}-${TGT}
+export TGT=de
+export DATA_ROOT=/path/to/mustc/root
+export DATA=${DATA_ROOT}/${SRC}-${TGT}
 
-FAIRSEQ=`realpath ../fairseq`
+FAIRSEQ=/path/to/fairseq
 USERDIR=`realpath ../simultaneous_translation`
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 
@@ -46,78 +53,19 @@ export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 # source ~/envs/fair/bin/activate
 ```
 
-## Sequence-Level KD
-We need a machine translation model as teacher for sequence-KD. 
-
-### Prepare data for MT
-```bash
-cd DATA
-bash get_data_mt.sh
-```
-### Train MT Model
-The following command will train the mt model with transcription and translation
-```bash
-cd exp
-bash 0-distill.sh
-```
-Average the checkpoints to get a better model
-```bash
-CHECKDIR=checkpoints/offline_mt
-CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-python ../scripts/average_checkpoints.py \
-  --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-  --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
-```
-To distill the training set, run 
-```bash
-bash 0a-decode-distill.sh # generate prediction at ./distilled/generate-test.txt
-bash 0b-create-distill-tsv.sh # generate distillation data at ${DATA_ROOT}/distill_st.tsv from prediction
-```
-
-### Pretrained models & distillation dataset
-|en-es|en-de|
-|-|-|
-|[train_distill.tsv](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215986&authkey=ALrO9wKxQZm2rM8)|train_distill.tsv|
-|[model](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215985&authkey=AK3Vpa-_G53hDN8)|model|
-|[data-bin](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215984&authkey=AMV_Y3WP9cCBfDA)|data-bin|
-
 ## ASR Pretraining
-We also need an offline ASR model to initialize our ST models. Note that the encoder of this model should be causal.
+First pretrain the speech encoder using CTC
 ```bash
-bash 1-offline_asr.sh # autoregressive ASR
+bash 1-ctc_asr.sh
 ```
-
-|Lang|de|es|fr|it|nl|pt|ro|ru|Download|
+### Pretrained model
+We provide speech encoder weights pretrained on the english transcription of MuST-C v1.0 joint data (english speech on all 8 languages). The transcriptions are converted into phoneme sequences using [g2p](DATA/g2p_encode.py). The phone error rate (PER) of the `avg_best_5_checkpoint.pt` evaluated on each split is reported below
+|MuST-C Split|en-de|en-es|en-fr|en-it|en-nl|en-pt|en-ro|en-ru|Download|
 |-|-|-|-|-|-|-|-|-|-|
-|dev PER|7.894|14.250|13.890|13.486|13.940|8.318|13.882|14.181|[checkpoints](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EXzSb9gOJXZMm7wjJCxj49gBNvMalGfTeo8zY05Cte4BUg?e=IXPjb4)|
-|tst-COMMON PER|10.572|12.274|12.334|12.359|12.211|12.350|12.346|12.337|[src_dict.txt](https://ntucc365-my.sharepoint.com/:t:/g/personal/r09922057_ntu_edu_tw/EaZptzl7rT1Ch67JzdRXLGABUnKLy1aPbmfCnERgyITqVQ?e=28hG83)|
-|tst-HE PER|8.573|9.339|9.317|9.507|10.332|10.153|10.046|9.532|-|
+|dev|7.894|14.250|13.890|13.486|13.940|8.318|13.882|14.181|[checkpoints](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EXzSb9gOJXZMm7wjJCxj49gBNvMalGfTeo8zY05Cte4BUg?e=IXPjb4)|
+|tst-COMMON|10.572|12.274|12.334|12.359|12.211|12.350|12.346|12.337|[src_dict.txt](https://ntucc365-my.sharepoint.com/:t:/g/personal/r09922057_ntu_edu_tw/EaZptzl7rT1Ch67JzdRXLGABUnKLy1aPbmfCnERgyITqVQ?e=28hG83)|
+|tst-HE|8.573|9.339|9.317|9.507|10.332|10.153|10.046|9.532|-|
+* Put `src_dict.txt` in your `${DATA_ROOT}/en-${TGT}`.
 
-### Pretrained models
-|arch/file|en-es|en-de|
-|:-:|-|-|
-|s2t_transformer_s|[12.71](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215989&authkey=AOq8OeN1_SGqDE4)||
-|gcmvn|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215991&authkey=AKAFZwAfApr0Pfc)|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215996&authkey=AB5W324zuNet3-4)|
-|spm|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215990&authkey=AAqzjqh5R5i1HkA)|[download](https://onedrive.live.com/download?cid=3E549F3B24B238B4&resid=3E549F3B24B238B4%215995&authkey=AJHMuGnCyQ9W5zY)|
-
-
-## Vanilla wait-k
-We can now train vanilla wait-k ST model as a baseline. To do this, run
-> **_NOTE:_**  to train with the distillation set, set `--train-subset` to `distill_st` in the script.
-```bash
-bash 2-vanilla_wait_k.sh
-```
-### Pretrained models
-The gcmvn and spm share the same files with corresponding poretrained asr.
-|DATA|arch|en-es|en-de|
-|-|-|-|-|
-||wait-1||||
-||wait-3||||
-||wait-5||||
-||wait-7||||
-||wait-9||||
-
-
-## Offline Evaluation (BLEU only)
 ## Online Evaluation (SimulEval)
 Install [SimulEval](docs/extra_installation.md).

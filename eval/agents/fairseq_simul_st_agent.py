@@ -9,6 +9,7 @@ import yaml
 from fairseq import utils, checkpoint_utils, tasks
 from fairseq.file_io import PathManager
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 try:
     from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
     from simuleval.agents import SpeechAgent
@@ -158,11 +159,16 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         self.feature_extractor = OnlineFeatureExtractor(args)
 
-        self.max_len = args.max_len
+        # self.max_len = args.max_len
+        self.max_len_a = args.max_len_a
+        self.max_len_b = args.max_len_b
 
         self.force_finish = args.force_finish
 
         torch.set_grad_enabled(False)
+
+    def max_len(self, src_len):
+        return self.max_len_a * src_len + self.max_len_b
 
     def build_states(self, args, client, sentence_id):
         # Initialize states here, for example add customized entry to states
@@ -194,8 +200,12 @@ class FairseqSimulSTAgent(SpeechAgent):
                             help="Subword splitter model path for target text")
         parser.add_argument("--user-dir", type=str, default="examples/simultaneous_translation",
                             help="User directory for simultaneous translation")
-        parser.add_argument("--max-len", type=int, default=200,
-                            help="Max length of translation")
+        # parser.add_argument("--max-len", type=int, default=200,
+        #                     help="Max length of translation")
+        parser.add_argument("--max-len-a", type=int, default=1.2,
+                            help="Max length of translation ax+b")
+        parser.add_argument("--max-len-b", type=int, default=10,
+                            help="Max length of translation ax+b")
         parser.add_argument("--force-finish", default=False, action="store_true",
                             help="Force the model to finish the hypothsis if the source is not finished")
         parser.add_argument("--shift-size", type=int, default=SHIFT_SIZE,
@@ -207,7 +217,9 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--feature-dim", type=int, default=FEATURE_DIM,
                             help="Acoustic feature dimension.")
         parser.add_argument("--chunked-read", type=int, default=1,
-                            help="chunks of 40ms (4*10ms) each READ action.")
+                            help="""chunks of 40ms (4*10ms) each READ action.
+                            e.g. --chunked-read 2 means the speech encoder
+                            will be updated with 80ms speech features.""")
 
         # fmt: on
         return parser
@@ -254,6 +266,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         states.speech_states = self.to_device(torch.Tensor())
         states.speech_logits = self.to_device(torch.Tensor())
         states.shrunk_states = self.to_device(torch.Tensor())
+        states.finish_encode = False
 
     def segment_to_units(self, segment, states):
         # Convert speech samples to features
@@ -293,11 +306,11 @@ class FairseqSimulSTAgent(SpeechAgent):
         if None in unit_queue.value:
             unit_queue.value.remove(None)
 
-        src_len = len(states.units.source)
+        src_len = states.shrunk_states.size(0)
         if (
             (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
             or
-            (states.finish_read() and len(states.units.target) > self.max_len)
+            (states.finish_read() and len(states.units.target) > self.max_len(src_len))
         ):
             hyp = decode(unit_queue)
             string_to_return = ([hyp] if hyp else []) + [DEFAULT_EOS]
@@ -325,16 +338,15 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         return string_to_return
 
-    def update_model_encoder(self, states):
+    def update_speech_encoder(self, states):
+        self.print_encoder_lengths(states, prefix="BEFORE LENGTHS")
         source_len = len(states.units.source)
         speech_len = states.speech_states.size(0)
-        shrunk_len = states.shrunk_states.size(0)
-        encoder_len = 0
+        # shrunk_len = states.shrunk_states.size(0)
+        # encoder_len = 0
 
-        if getattr(states, "encoder_states", None) is not None:
-            encoder_len = states.encoder_states["encoder_out"][0].size(0)
-
-        logger.debug(f"{source_len},{speech_len},{shrunk_len},{encoder_len}")
+        # if getattr(states, "encoder_states", None) is not None:
+        #     encoder_len = states.encoder_states["encoder_out"][0].size(0)
 
         if source_len == 0:
             return
@@ -369,6 +381,16 @@ class FairseqSimulSTAgent(SpeechAgent):
                 logits
             ), dim=1
         )
+        torch.cuda.empty_cache()
+
+        # print lengths
+        self.print_encoder_lengths(states, prefix="ENCODER LENGTHS")
+
+    def update_text_encoder(self, states):
+        # A switch to only use this once after finish read
+        if states.finish_encode:
+            return
+
         # Step 2: discover new segs
         labels = states.speech_logits.argmax(-1).squeeze(0)
         tail = labels[-1]
@@ -399,10 +421,13 @@ class FairseqSimulSTAgent(SpeechAgent):
                 ), dim=0
             )
 
+        encoder_len = 0
+        if getattr(states, "encoder_states", None) is not None:
+            encoder_len = states.encoder_states["encoder_out"][0].size(0)
         # Step 4: text encoder
         shrunk_len = states.shrunk_states.size(0)
         if shrunk_len > encoder_len:
-            if self.model.encoder.text_encoder is not None:            
+            if self.model.encoder.text_encoder is not None:
                 text_out = self.model.encoder.text_encoder(
                     states.shrunk_states.transpose(0, 1),
                     incremental_state=states.enc_incremental_states["text"],
@@ -410,7 +435,8 @@ class FairseqSimulSTAgent(SpeechAgent):
                 )
                 update_text_states = text_out["encoder_out"][0]
             else:
-                update_text_states = states.shrunk_states[-(shrunk_len - encoder_len):, ...]
+                update_text_states = states.shrunk_states[-(
+                    shrunk_len - encoder_len):, ...]
 
             if getattr(states, "encoder_states", None) is None:
                 states.encoder_states = {
@@ -424,15 +450,34 @@ class FairseqSimulSTAgent(SpeechAgent):
                         update_text_states
                     ), dim=0
                 )
-
+            states.finish_encode = states.finish_read()
         torch.cuda.empty_cache()
+
+    def print_encoder_lengths(self, states, prefix="ENCODER LENGTHS"):
+        # print lengths
+        source_len = len(states.units.source)
+        speech_len = states.speech_states.size(0)
+        shrunk_len = states.shrunk_states.size(0)
+        encoder_len = 0
+
+        if getattr(states, "encoder_states", None) is not None:
+            encoder_len = states.encoder_states["encoder_out"][0].size(0)
+
+        logger.debug(
+            f"{prefix} SRC: {source_len}, SPH: {speech_len}, SHK: {shrunk_len}, ENC: {encoder_len}")
 
     def update_states_read(self, states):
         # Happens after a read action.
-        self.update_model_encoder(states)
+        # self.update_model_encoder(states)
+        self.update_speech_encoder(states)
+        self.update_text_encoder(states)
 
     def policy(self, states):
         if getattr(states, "encoder_states", None) is None:
+            logger.debug(f"Action: FIRST READ (Finish={states.finish_read()})")
+            # import pdb; pdb.set_trace()
+            if states.finish_read():
+                self.update_text_encoder(states)
             return READ_ACTION
 
         tgt_indices = self.to_device(
@@ -462,7 +507,14 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         torch.cuda.empty_cache()
 
+        srclen = states.dec_incremental_states["steps"]["src"]
+        tgtlen = states.dec_incremental_states["steps"]["tgt"] - 1
+        logger.debug(
+            f"srclen: {srclen}, tgtlen: {tgtlen}, Action: {['READ', 'WRITE'][outputs.action]}, {'finished' if states.finish_read() else ''}")
+
         if outputs.action == 0:
+            if states.finish_read():
+                self.update_text_encoder(states)
             return READ_ACTION
         else:
             return WRITE_ACTION
@@ -485,7 +537,9 @@ class FairseqSimulSTAgent(SpeechAgent):
         ):
             # If we want to force finish the translation
             # (don't stop before finish reading), return a None
-            # self.model.decoder.clear_cache(states.dec_incremental_states)
+            self.model.decoder.clean_cache(states.dec_incremental_states)
             index = None
+
+        # logger.debug(f"WRITE {index}")
 
         return index

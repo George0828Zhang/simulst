@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-TASK=st_ws_sem_mtl
+TASK=vanilla_st
 . ./data_path.sh
-CHECKPOINT=checkpoints/ctc_asr/checkpoint_best.pt
+CHECKPOINT=checkpoints/ctc_asr/avg_best_5_checkpoint.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${CHECKPOINT} \
@@ -9,15 +9,16 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --train-subset train_pho_st \
     --valid-subset dev_pho_st \
     --skip-invalid-size-inputs-valid-test \
-    --max-tokens 30000 \
+    --max-tokens 40000 \
     --max-tokens-valid 10000 \
     --update-freq 2 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
-    --arch ws_transformer_s --share-decoder-input-output-embed --do-weighted-shrink \
+    --arch ws_transformer_s \
     --criterion label_smoothed_mtl --label-smoothing 0.1 --asr-factor 0.5 --report-accuracy \
-    --clip-norm 10.0 \
+    --clip-norm 1.0 \
     --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
+    --weight-decay 1e-4 \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \

@@ -2,10 +2,8 @@
 TASK=ctc_asr
 . ./data_path.sh
 DATA=${DATA_ROOT}/joint
-CHECKPOINT=checkpoints/mustc_fr_asr_transformer_s.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --load-pretrained-encoder-from ${CHECKPOINT} \
     --config-yaml config_asr.yaml \
     --train-subset train_de_asr,train_es_asr,train_fr_asr,train_it_asr,train_nl_asr,train_pt_asr,train_ro_asr,train_ru_asr \
     --valid-subset dev_de_asr,dev_es_asr \
@@ -17,7 +15,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --arch speech_encoder_s \
     --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
     --clip-norm 10.0 \
-    --optimizer adam --lr 1e-3 --lr-scheduler inverse_sqrt \
+    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
@@ -32,5 +30,3 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --num-workers 4 \
     --fp16 \
     --seed 1
-    # --max-positions-text 1024 \
-    # --max-tokens-text 8000 \
