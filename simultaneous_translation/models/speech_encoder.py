@@ -35,7 +35,7 @@ from fairseq.models.speech_to_text.s2t_transformer import (
 
 # user
 from simultaneous_translation.models.nat_utils import generate
-from simultaneous_translation.modules import (
+from simultaneous_translation.modules.monotonic_transformer_layer import (
     CausalTransformerEncoderLayer,
 )
 

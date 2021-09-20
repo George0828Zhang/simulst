@@ -1,56 +1,62 @@
-#!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
+from fairseq.modules import TransformerDecoderLayer, TransformerEncoderLayer
+
+from . import build_monotonic_attention
+
 from typing import Dict, Optional
 
-import torch
-
-from fairseq.modules import TransformerEncoderLayer
 from torch import Tensor
-
-logger = logging.getLogger(__name__)
+import torch
 
 
 class CausalTransformerEncoderLayer(TransformerEncoderLayer):
-    """ Similar to NonCausal above, but adds
-    1. future masking for causal encoding
+    """ TransformerEncoderLayer but adds the following
+    1. future masking
     2. incremental states for incremental encoding in inference
     """
-    def __init__(self, args, delay=1):
+    def __init__(self, args):
         super().__init__(args)
         self._future_mask = torch.empty(0)
-        self.log_penalty = getattr(args, "encoder_log_penalty", False)
-        self.delay = delay
-        assert self.delay > 0, "Cannot be faster than delay=1."
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
         # self._future_mask.device != tensor.device is not working in TorchScript. This is a workaround.
         if (
-            self._future_mask.size(0) == 0
-            or (not self._future_mask.device == tensor.device)
-            or self._future_mask.size(0) < dim
+            self._future_mask.size(0) == 0 or (
+                not self._future_mask.device == tensor.device
+            ) or self._future_mask.size(0) < dim
         ):
             neg_inf = -torch.finfo(tensor.dtype).max
             self._future_mask = torch.triu(
-                torch.full([dim, dim], neg_inf), self.delay
+                torch.full([dim, dim], neg_inf), 1
             )
-            if self.log_penalty:
-                penalty = torch.arange(dim).type_as(self._future_mask)
-                penalty = torch.abs(
-                    penalty.unsqueeze(1) - penalty
-                ).clamp(min=1)
-                self._future_mask -= penalty.log()
         self._future_mask = self._future_mask.type_as(tensor)
         return self._future_mask[:dim, :dim]
 
     def forward(
-        self, x, encoder_padding_mask, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        self,
+        x,
+        encoder_padding_mask: Optional[Tensor] = None,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
     ):
+        """
+        Args:
+            x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
+            encoder_padding_mask (ByteTensor): binary ByteTensor of shape
+                `(batch, seq_len)` where padding elements are indicated by ``1``.
+            attn_mask (ByteTensor): binary tensor of shape `(tgt_len, src_len)`,
+                where `tgt_len` is the length of output and `src_len` is the
+                length of input, though here both are equal to `seq_len`.
+                `attn_mask[tgt_i, src_j] = 1` means that when calculating the
+                embedding for `tgt_i`, we exclude (mask out) `src_j`. This is
+                useful for strided self-attention.
+        Returns:
+            encoded output of shape `(seq_len, batch, embed_dim)`
+        """
         """
         In inference, prev states are cached so we need to
         compute mask from cached states and input x together.
@@ -83,6 +89,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
             value=x,
             key_padding_mask=encoder_padding_mask,
             incremental_state=incremental_state,
+            need_weights=False,
             attn_mask=attn_mask,
         )
         x = self.dropout_module(x)
@@ -120,6 +127,32 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
             # if input_buffer_key.size(2) > prune:
             if keep > 0:
                 input_buffer[key] = input_buffer_key[:, :, :keep, :]
+            else:
+                typed_empty_dict: Dict[str, Optional[Tensor]] = {}
+                input_buffer = typed_empty_dict
+                break
+        assert incremental_state is not None
+        self.self_attn._set_input_buffer(incremental_state, input_buffer)
+
+
+class TransformerMonotonicDecoderLayer(TransformerDecoderLayer):
+    def __init__(self, args):
+        assert args.simul_type is not None, "A --simul-type is needed."
+        super().__init__(args)
+
+    def build_encoder_attention(self, embed_dim, args):
+        return build_monotonic_attention(args)
+
+    def prune_incremental_state(
+        self,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
+    ):
+        input_buffer = self.self_attn._get_input_buffer(incremental_state)
+        for key in ["prev_key", "prev_value"]:
+            input_buffer_key = input_buffer[key]
+            assert input_buffer_key is not None
+            if input_buffer_key.size(2) > 1:
+                input_buffer[key] = input_buffer_key[:, :, :-1, :]
             else:
                 typed_empty_dict: Dict[str, Optional[Tensor]] = {}
                 input_buffer = typed_empty_dict

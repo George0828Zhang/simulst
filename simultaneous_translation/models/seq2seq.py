@@ -4,6 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
 import logging
 from typing import Dict, Optional
 from collections import OrderedDict
@@ -32,15 +33,15 @@ from fairseq.models.speech_to_text.s2t_transformer import (
 
 # user
 from simultaneous_translation.models.speech_encoder import CausalSpeechEncoder
-from simultaneous_translation.modules import (
+from simultaneous_translation.modules.monotonic_transformer_layer import (
     CausalTransformerEncoderLayer,
 )
 
 logger = logging.getLogger(__name__)
 
 
-@register_model("ws_transformer")
-class WeightedShrinkingTransformerModel(S2TTransformerModel):
+@register_model("st2t_transformer")
+class ST2TTransformerModel(S2TTransformerModel):
     """
     causal encoder (+ semantic encoder) + normal decoder
     """
@@ -48,13 +49,19 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
     def add_args(parser):
         """Add model-specific arguments to the parser.
         """
-        super(WeightedShrinkingTransformerModel,
-              WeightedShrinkingTransformerModel).add_args(parser)
+        super(ST2TTransformerModel,
+              ST2TTransformerModel).add_args(parser)
         parser.add_argument(
             "--do-weighted-shrink",
             action="store_true",
             default=False,
             help="shrink the encoder states based on ctc output.",
+        )
+        parser.add_argument(
+            "--fixed-predecision-ratio",
+            type=int,
+            default=1,
+            help="shrink speech encoder output as fixed-length segments.",
         )
         parser.add_argument(
             "--text-encoder-layers",
@@ -100,7 +107,7 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
     def build_model(cls, args, task):
         """Build a new model instance."""
 
-        ws_transformer_s(args)
+        st2t_transformer_s(args)
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -121,8 +128,6 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
         nn.init.normal_(
             ctc_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
         )
-        if getattr(args, "share_encoder_input_output_embed", False):
-            ctc_projection.weight = encoder_embed_tokens.weight
         encoder = cls.build_encoder(args, task, encoder_embed_tokens, ctc_projection)
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
         return cls(encoder, decoder)
@@ -132,16 +137,14 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
         src_tokens,
         src_lengths,
         prev_output_tokens,
-        src_txt_tokens,
-        src_txt_lengths,
+        src_txt_tokens=None,  # unused
+        src_txt_lengths=None,  # unused
     ):
         """
         """
         encoder_out = self.encoder(
             src_tokens=src_tokens,
-            src_lengths=src_lengths,
-            src_txt_tokens=src_txt_tokens,
-            src_txt_lengths=src_txt_lengths,
+            src_lengths=src_lengths
         )
         logits, decoder_out = self.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
@@ -151,11 +154,6 @@ class WeightedShrinkingTransformerModel(S2TTransformerModel):
             "decoder_out": decoder_out,
         }
         return logits, extra
-
-    @property
-    def output_layer(self):
-        """ convenient function for accuracy calculation """
-        return self.encoder.ctc_projection
 
     def upgrade_state_dict_named(self, state_dict, name):
         """ temp fix for layer index error when loading check"""
@@ -329,6 +327,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         self.speech_encoder = speech_encoder
         self.text_encoder = text_encoder
         self.do_weighted_shrink = args.do_weighted_shrink
+        self.fixed_predecision_ratio = args.fixed_predecision_ratio
         self.dropout_module = FairseqDropout(
             args.dropout, module_name=self.__class__.__name__
         )
@@ -343,16 +342,13 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     def forward(
         self,
         src_tokens,
-        src_lengths,
-        src_txt_tokens,  # unused
-        src_txt_lengths,  # unused
+        src_lengths
     ):
         # encode speech
         encoder_out = self.speech_encoder(
             src_tokens=src_tokens, src_lengths=src_lengths)
         encoder_out = self.forward_ctc_projection(encoder_out)
-        if self.do_weighted_shrink:
-            encoder_out = self.weighted_shrinking(encoder_out)
+        encoder_out = self.shrink_speech(encoder_out)
         # encode text
         if self.text_encoder is not None:
             src_tokens = encoder_out["encoder_out"][0].transpose(0, 1)
@@ -378,7 +374,88 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         })
         return encoder_out
 
-    def _weighted_shrinking_op(self, speech_states, logits, speech_padding_mask=None):
+    def shrink_speech(self, encoder_out):
+        # speech mask
+        speech_padding_mask = encoder_out["encoder_padding_mask"][0] \
+            if len(encoder_out["encoder_padding_mask"]) > 0 else None
+
+        # speech hidden states
+        speech_states = encoder_out["encoder_out"][0]
+        logits = encoder_out["encoder_logits"][0]
+
+        B, S, C = logits.size()
+        shrinked_states, shrink_lengths = self.shrinking_op(
+            speech_states,
+            logits,
+            speech_padding_mask
+        )
+
+        encoder_padding_mask = lengths_to_padding_mask(shrink_lengths)
+        # calculate shrink rate
+        src_lengths = shrink_lengths.new_full(
+            (B,), S) if speech_padding_mask is None else (~speech_padding_mask).sum(-1).type_as(shrink_lengths)
+        shrink_rate = (src_lengths / shrink_lengths).sum()
+        return {
+            "encoder_out": [shrinked_states],  # T x B x C
+            "encoder_padding_mask": [encoder_padding_mask],  # B x T
+            "encoder_embedding": [],  # B x T x C
+            "encoder_states": encoder_out["encoder_states"],  # List[T x B x C]
+            "encoder_logits": [logits],
+            "speech_padding_mask": [speech_padding_mask],
+            "src_tokens": [],
+            "src_lengths": [],
+            "shrink_rate": [shrink_rate]
+        }
+
+    @property
+    def shrinking_op(self):
+        if self.do_weighted_shrink:
+            return self._weighted_shrink
+        else:
+            return self._fixed_shrink
+
+    def _fixed_shrink(self, speech_states, logits, speech_padding_mask=None):
+        S, B, E = speech_states.size()
+        if speech_padding_mask is not None:
+            assert tuple(speech_padding_mask.shape[:2]) == (B, S)
+        else:
+            speech_padding_mask = speech_states.new_zeros(
+                (B, S), dtype=torch.bool)
+
+        ratio = self.fixed_predecision_ratio
+        v = speech_states.transpose(0, 1)
+        new_speech_padding_mask = speech_padding_mask
+        buckets = math.ceil(S / ratio)
+
+        # pad key value
+        new_S = buckets * ratio
+        if new_S != S:
+            v = torch.cat([
+                v,
+                v.new_zeros((B, new_S - S, E)),
+            ], dim=1)
+            new_speech_padding_mask = torch.cat([
+                speech_padding_mask,
+                speech_padding_mask.new_ones((B, new_S - S)),
+            ], dim=1)
+
+        # remove padded states' influence
+        v = v * (1 - new_speech_padding_mask.unsqueeze(-1).type_as(v))
+
+        # aggregate buckets (B, new_S, E) -> (B, buckets, E)
+        shrinked_states = v.view(
+            B, buckets, ratio, E).mean(dim=2).transpose(1, 0)
+        # aggregate padding mask by: if a bucket is all pad then it is masked.
+        new_speech_padding_mask = new_speech_padding_mask.view(
+            B, buckets, ratio).prod(dim=2).bool()
+        shrink_lengths = (~new_speech_padding_mask).sum(-1)
+
+        assert shrinked_states.size(1) == B
+        assert not shrinked_states.isnan().any()
+
+        return shrinked_states, shrink_lengths
+
+    def _weighted_shrink(self, speech_states, logits, speech_padding_mask=None):
         blank = self.src_dict.bos()
         pad = self.src_dict.pad()
 
@@ -402,10 +479,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
             (ctc_pred == pad) & (ctc_pred != pre_pred))
         segment_ids = segment_ids.cumsum(dim=1)
         # prepare attn matrix with max len
-        shrink_lengths = segment_ids.max(dim=-1)[0] + 1
-        # attn_weights = utils.fill_with_neg_inf(
-        #     logits.new_empty((B, shrink_lengths.max(), S))
-        # )
+        shrink_lengths = segment_ids.max(dim=1)[0] + 1
         neg_inf = -torch.finfo(logits.dtype).max
         attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
         # compute non-blank confidence
@@ -418,7 +492,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         )
         attn_weights = utils.softmax(
             attn_weights, dim=-1
-        ).type_as(confidence)
+        ).type_as(speech_states)
         attn_weights = self.dropout_module(attn_weights)
 
         # shrink speech states
@@ -433,70 +507,28 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         if speech_padding_mask is not None:
             # pad states are shrunk to a segment
             # remove this 'pad segment'
-            segment_ids = segment_ids.clone()
-            segment_ids[speech_padding_mask] = -1
-            shrink_lengths = segment_ids.max(dim=-1)[0] + 1
-            shrinked_states = shrinked_states[:shrink_lengths.max(), ...]
+            # first set pad segment to 0
+            segment_ids = segment_ids * (1 - speech_padding_mask.long())
+            real_shrink_lengths = segment_ids.max(dim=1)[0] + 1
+            if real_shrink_lengths.max() < shrink_lengths.max():
+                shrink_lengths = real_shrink_lengths
+                shrinked_states = shrinked_states[:shrink_lengths.max(), ...]
             del segment_ids
 
         return shrinked_states, shrink_lengths
 
-    def weighted_shrinking(self, encoder_out):
-        # blank = self.src_dict.bos()
-        # pad = self.src_dict.pad()
-
-        # speech mask
-        speech_padding_mask = encoder_out["encoder_padding_mask"][0] \
-            if len(encoder_out["encoder_padding_mask"]) > 0 else None
-
-        # speech hidden states
-        speech_states = encoder_out["encoder_out"][0]
-        # encoder_states = encoder_out["encoder_states"]
-        # if return_all_hiddens:
-        #     encoder_states.append(speech_states)
-
-        # ctc projection
-        # logits = self.speech_encoder.ctc_projection(
-        #     speech_states).transpose(0, 1)
-        logits = encoder_out["encoder_logits"][0]
-
-        # if not self.do_weighted_shrink:
-        #     encoder_out.update({
-        #         "encoder_logits": [logits],
-        #         # "encoder_states": encoder_states,  # List[T x B x C]
-        #         "speech_padding_mask": encoder_out["encoder_padding_mask"]
-        #     })
-        #     return encoder_out
-
-        B, S, C = logits.size()
-        shrinked_states, shrink_lengths = self._weighted_shrinking_op(
-            speech_states, logits, speech_padding_mask)
-
-        encoder_padding_mask = lengths_to_padding_mask(shrink_lengths)
-        # calculate shrink rate
-        src_lengths = shrink_lengths.new_full(
-            (B,), S) if speech_padding_mask is None else (~speech_padding_mask).sum(-1).type_as(shrink_lengths)
-        shrink_rate = (src_lengths / shrink_lengths).sum()
-        return {
-            "encoder_out": [shrinked_states],  # T x B x C
-            "encoder_padding_mask": [encoder_padding_mask],  # B x T
-            "encoder_embedding": [],  # B x T x C
-            "encoder_states": encoder_out["encoder_states"],  # List[T x B x C]
-            "encoder_logits": [logits],
-            "speech_padding_mask": [speech_padding_mask],
-            "src_tokens": [],
-            "src_lengths": [],
-            "shrink_rate": [shrink_rate]
-        }
-
 
 @register_model_architecture(
-    "ws_transformer", "ws_transformer_s"
+    "st2t_transformer", "st2t_transformer_s"
 )
-def ws_transformer_s(args):
+def st2t_transformer_s(args):
     args.encoder_layers = getattr(args, "encoder_layers", 12)
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
-    args.share_encoder_input_output_embed = True
+    args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
+    if args.do_weighted_shrink:
+        args.fixed_predecision_ratio = 1
+    else:
+        getattr(args, "fixed_predecision_ratio", 1)
     args.share_decoder_input_output_embed = True
     s2t_transformer_s(args)
