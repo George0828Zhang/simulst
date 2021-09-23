@@ -46,7 +46,7 @@ class WaitkSequenceGenerator(nn.Module):
         symbols_to_strip_from_output=None,
         lm_model=None,
         lm_weight=1.0,
-        waitk=1024,
+        waitk=6000,
         pre_decision_ratio=1,
     ):
         """Generates translations of a given source sentence.
@@ -750,9 +750,49 @@ class EnsembleModel(nn.Module):
 
     def slice_source(self, encoder_out, context_size):
         return [
-            model.encoder.slice_encoder_out(encoder_out[m], context_size)
+            self.slice_encoder_out(encoder_out[m], context_size)
             for m, model in enumerate(self.models)
         ]
+
+    def slice_encoder_out(self, encoder_out, context_size):
+        """ Slice encoder output according to *context_size*.
+        encoder_out:
+            (S, N, E) -> (context_size, N, E)
+        encoder_padding_mask:
+            (N, S) -> (N, context_size)
+        encoder_embedding:
+            (N, S, E) -> (N, context_size, E)
+        encoder_states:
+            List(S, N, E) -> List(context_size, N, E)
+        """
+        new_encoder_out = (
+            [] if len(encoder_out["encoder_out"]) == 0
+            else [x[:context_size].clone() for x in encoder_out["encoder_out"]]
+        )
+
+        new_encoder_padding_mask = (
+            [] if len(encoder_out["encoder_padding_mask"]) == 0
+            else [x[:, :context_size].clone() for x in encoder_out["encoder_padding_mask"]]
+        )
+
+        new_encoder_embedding = (
+            [] if len(encoder_out["encoder_embedding"]) == 0
+            else [x[:, :context_size].clone() for x in encoder_out["encoder_embedding"]]
+        )
+
+        encoder_states = encoder_out["encoder_states"]
+        if len(encoder_states) > 0:
+            for idx, state in enumerate(encoder_states):
+                encoder_states[idx] = state[:context_size].clone()
+
+        return {
+            "encoder_out": new_encoder_out,  # T x B x C
+            "encoder_padding_mask": new_encoder_padding_mask,  # B x T
+            "encoder_embedding": new_encoder_embedding,  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],  # B x T
+            "src_lengths": [],  # B x 1
+        }
 
     @torch.jit.export
     def forward_decoder(

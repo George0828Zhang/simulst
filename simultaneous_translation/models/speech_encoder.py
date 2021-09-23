@@ -249,9 +249,9 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
         end_id is the last idx of the layers
         """
         if end_id is None:
-            end_id = len(self.layers)
+            end_id = len(self.transformer_layers)
 
-        for index, layer in enumerate(self.layers):
+        for index, layer in enumerate(self.transformer_layers):
             if index < end_id:
                 layer.prune_incremental_state(incremental_state, keep)
 

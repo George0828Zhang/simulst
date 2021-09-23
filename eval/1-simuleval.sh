@@ -74,28 +74,14 @@ simuleval \
   --model-path ${CHECKPOINT} \
   --tgt-splitter-path ${SPM_PREFIX}.model \
   --output ${OUTPUT} \
+  --chunked-read 7 \
+  --overlap 1 \
+  --incremental-encoder \
   --sacrebleu-tokenizer ${BLEU_TOK} \
   --eval-latency-unit ${UNIT} \
-  --chunked-read 3 \
+  --segment-type ${UNIT} \
   ${NO_SPACE} \
-  --scores
-
-# simuleval \
-#   --agent ${AGENT} \
-#   --user-dir ${USERDIR} \
-#   --source ${SRC_FILE} \
-#   --target ${TGT_FILE} \
-#   --data-bin ${DATA} \
-#   --model-path ${CHECKPOINT} \
-#   --src-splitter-path ${SPM_PREFIX}_${SRC}.model \
-#   --tgt-splitter-path ${SPM_PREFIX}_${TGT}.model \
-#   --output ${OUTPUT} \
-#   --incremental-encoder \
-#   --sacrebleu-tokenizer ${BLEU_TOK} \
-#   --eval-latency-unit ${UNIT} \
-#   --segment-type ${UNIT} \
-#   ${NO_SPACE} \
-#   --scores \
-#   --test-waitk ${WAITK} \
-#   --port ${PORT} \
-#   --workers ${WORKERS}
+  --scores \
+  --test-waitk ${WAITK} \
+  --port ${PORT} \
+  --workers ${WORKERS}

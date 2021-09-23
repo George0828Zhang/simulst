@@ -342,7 +342,9 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     def forward(
         self,
         src_tokens,
-        src_lengths
+        src_lengths,
+        src_txt_tokens=None,  # unused
+        src_txt_lengths=None,  # unused
     ):
         # encode speech
         encoder_out = self.speech_encoder(

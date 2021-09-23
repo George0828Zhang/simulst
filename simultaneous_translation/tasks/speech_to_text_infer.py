@@ -75,7 +75,7 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             waitk = test_waitk
         pre_ratio = 1
         if waitk is not None:
-            pre_ratio = models[0].pre_decision_ratio
+            pre_ratio = getattr(models[0], "pre_decision_ratio", 1)
             seq_gen_cls = WaitkSequenceGenerator
             extra = {"waitk": waitk, "pre_decision_ratio": pre_ratio}
             if extra_gen_cls_kwargs:
