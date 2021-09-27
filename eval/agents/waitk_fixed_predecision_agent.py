@@ -10,6 +10,7 @@ import yaml
 from fairseq import utils, checkpoint_utils, tasks
 from fairseq.file_io import PathManager
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 try:
     from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
     from simuleval.agents import SpeechAgent
@@ -121,6 +122,19 @@ class FairseqSimulSTAgent(SpeechAgent):
     def __init__(self, args):
         super().__init__(args)
 
+        self.incremental_encoder = args.incremental_encoder
+        self.full_sentence = args.full_sentence
+        self.segment_type = args.segment_type
+        self.workers = args.workers
+        self.speech_segment_size *= args.chunked_read
+        logger.info(f"Chunked read size: {self.speech_segment_size} ms")
+        self.overlap = args.overlap
+        logger.info(f"Overlap size: {self.overlap} (states)")
+
+        if self.full_sentence:
+            logger.info("Full sentence override waitk to 6000.")
+            self.test_waitk = 6000
+
         self.eos = DEFAULT_EOS
 
         self.gpu = getattr(args, "gpu", False)
@@ -129,9 +143,7 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         self.load_model_vocab(args)
 
-        self.pre_decision_ratio = 1
-
-        self.speech_segment_size *= 7
+        # self.speech_segment_size *= 7
 
         args.global_cmvn = None
         if args.config:
@@ -153,6 +165,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.force_finish = args.force_finish
 
         torch.set_grad_enabled(False)
+        torch.set_num_threads(self.workers)
 
     def build_states(self, args, client, sentence_id):
         # Initialize states here, for example add customized entry to states
@@ -199,6 +212,22 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--feature-dim", type=int, default=FEATURE_DIM,
                             help="Acoustic feature dimension.")
         parser.add_argument("--test-waitk", type=int, default=1)
+        parser.add_argument("--chunked-read", type=int, default=1,
+                            help="""chunks of 40ms (4*10ms) each READ action.
+                            e.g. --chunked-read 2 means the speech encoder
+                            will be updated with 80ms speech features.""")
+        parser.add_argument("--overlap", type=int, default=0,
+                            help="""number of speech states to discard each
+                            read action. these states contain padding information.
+                            """)
+        parser.add_argument("--incremental-encoder", default=False, action="store_true",
+                            help="Update the model incrementally without recomputation of history.")
+        parser.add_argument("--full-sentence", default=False, action="store_true",
+                            help="use full sentence strategy, "
+                            "by updating the encoder only once after read is finished.")
+        parser.add_argument("--segment-type", type=str, default="word", choices=["word", "char"],
+                            help="Agent can send a word or a char to server at a time.")
+        parser.add_argument("--workers", type=int, default=1)
         # fmt: on
         return parser
 
@@ -240,7 +269,13 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.feature_extractor.clear_cache()
         states.units.source = TensorListEntry()
         states.units.target = ListEntry()
-        states.incremental_states = dict()
+        states.enc_incremental_states = {"speech": dict(), "text": dict()}
+        states.dec_incremental_states = dict()
+        states.speech_states = self.to_device(torch.Tensor())
+        states.speech_logits = self.to_device(torch.Tensor())
+        states.shrunk_states = self.to_device(torch.Tensor())
+        states.finish_encode = False
+        states.shrunk_length = 0
 
     def segment_to_units(self, segment, states):
         # Convert speech samples to features
@@ -272,7 +307,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         if None in unit_queue.value:
             unit_queue.value.remove(None)
 
-        src_len = math.ceil(states.encoder_states["encoder_out"][0].size(0) // self.pre_decision_ratio)
+        src_len = states.encoder_states["encoder_out"][0].size(0)
         if (
             (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
             or len(states.units.target) > self.max_len(src_len)
@@ -318,9 +353,168 @@ class FairseqSimulSTAgent(SpeechAgent):
         states.encoder_states = self.model.encoder(src_indices, src_lengths)
         torch.cuda.empty_cache()
 
+    def update_speech_encoder(self, states):
+        source_len = len(states.units.source)
+        speech_len = states.speech_states.size(0)
+
+        # A switch to only use this once after finish read
+        if source_len == 0 or states.finish_encode:
+            return
+
+        src_indices = self.to_device(
+            states.units.source.value.unsqueeze(0)
+        )
+        src_lengths = self.to_device(
+            torch.LongTensor([states.units.source.value.size(0)])
+        )
+
+        overlap = 0 if states.finish_read() else self.overlap
+        # Step 1: get new speech states
+        sub_source_len = self.model.encoder.speech_encoder.subsample.get_out_seq_lens_tensor(src_lengths).item()
+        inc_source_len = sub_source_len - speech_len - overlap
+        if inc_source_len > 0:
+            encoder_out = self.model.encoder.speech_encoder(
+                src_tokens=src_indices,
+                src_lengths=src_lengths,
+                incremental_state=states.enc_incremental_states["speech"],
+                incremental_step=sub_source_len - speech_len,
+            )
+            # pruning incomplete encoding output and states
+            encoder_out["encoder_out"][0] = encoder_out["encoder_out"][0][:inc_source_len]
+            self.model.encoder.speech_encoder.clear_cache(
+                states.enc_incremental_states["speech"],
+                keep=sub_source_len - overlap
+            )
+            encoder_out = self.model.encoder.forward_ctc_projection(encoder_out)
+            states.speech_states = torch.cat(
+                (
+                    states.speech_states,
+                    encoder_out["encoder_out"][0]
+                ), dim=0
+            )
+            states.speech_logits = torch.cat(
+                (
+                    states.speech_logits,
+                    encoder_out["encoder_logits"][0]
+                ), dim=1
+            )
+            torch.cuda.empty_cache()
+        else:
+            logger.debug("REDUNDANT SPEECH READ")
+
+    def update_text_encoder(self, states):
+        # A switch to only use this once after finish read
+        if states.finish_encode:
+            return
+
+        speech_len = states.speech_states.size(0)
+        shrunk_len = states.shrunk_length
+
+        # Step 2: discover new segs
+        if states.finish_read():
+            cutoff = speech_len
+        elif self.model.encoder.do_weighted_shrink:
+            # weighted shrinking
+            labels = states.speech_logits.argmax(-1).squeeze(0)
+            tail = labels[-1]
+
+            # get last label not equal to tail
+            nontail = (labels != tail).nonzero()
+            # no new segment?
+            if nontail.numel() == 0:
+                cutoff = shrunk_len
+            else:
+                cutoff = nontail[-1].item() + 1
+        else:
+            # fixed predecision
+            ratio = self.model.encoder.fixed_predecision_ratio
+            cutoff = (speech_len // ratio) * ratio
+
+        # update shrunk states
+        if cutoff > shrunk_len:
+            update_speech_states = states.speech_states[shrunk_len:cutoff, ...]
+            update_logits = states.speech_logits[:, shrunk_len:cutoff, :]
+            # Step 3: shrink new segments
+            shrunk_states, shrink_lengths = self.model.encoder.shrinking_op(
+                update_speech_states, update_logits)
+
+            states.shrunk_states = torch.cat(
+                (
+                    states.shrunk_states,
+                    shrunk_states
+                ), dim=0
+            )
+
+            # remember to update shrunk len
+            states.shrunk_length = shrunk_len = cutoff
+
+        # text encoder out length
+        encoder_len = 0
+        if getattr(states, "encoder_states", None) is not None:
+            encoder_len = states.encoder_states["encoder_out"][0].size(0)
+        # Step 4: text encoder
+        shrunk_state_len = states.shrunk_states.size(0)
+        if shrunk_state_len > encoder_len:
+            if self.model.encoder.text_encoder is not None:
+                text_out = self.model.encoder.text_encoder(
+                    states.shrunk_states.transpose(0, 1),
+                    incremental_state=states.enc_incremental_states["text"],
+                    incremental_step=shrunk_state_len - encoder_len,
+                )
+                update_text_states = text_out["encoder_out"][0]
+            else:
+                update_text_states = states.shrunk_states[-(
+                    shrunk_state_len - encoder_len):, ...]
+
+            if getattr(states, "encoder_states", None) is None:
+                states.encoder_states = {
+                    # List[T x B x C]
+                    "encoder_out": [update_text_states],
+                    "encoder_padding_mask": []
+                }
+            else:
+                states.encoder_states["encoder_out"][0] = torch.cat(
+                    (
+                        states.encoder_states["encoder_out"][0],
+                        update_text_states
+                    ), dim=0
+                )
+            if (
+                states.finish_read()
+                and shrunk_len == speech_len
+                and shrunk_state_len == states.encoder_states["encoder_out"][0].size(0)
+            ):
+                states.finish_encode = True
+                logger.debug("FINISH ENCODE")
+        else:
+            logger.debug("REDUNDANT TEXT READ")
+        torch.cuda.empty_cache()
+
+    def print_encoder_lengths(self, states, prefix="ENCODER LENGTHS"):
+        # print lengths
+        source_len = len(states.units.source)
+        speech_len = states.speech_states.size(0)
+        shrunk_len = states.shrunk_length
+        shrunk_state_len = states.shrunk_states.size(0)
+        encoder_len = 0
+
+        if getattr(states, "encoder_states", None) is not None:
+            encoder_len = states.encoder_states["encoder_out"][0].size(0)
+
+        finish = ", RECV_ALL" if states.finish_read() else ""
+
+        logger.debug(
+            f"{prefix} SRC: {source_len}, SPH: {shrunk_len}/{speech_len}, TXT: {encoder_len}/{shrunk_state_len}{finish}")
+
     def update_states_read(self, states):
         # Happens after a read action.
-        self.update_model_encoder(states)
+        if not self.full_sentence or states.finish_read():
+            if self.incremental_encoder:
+                self.update_speech_encoder(states)
+                self.update_text_encoder(states)
+            else:
+                self.update_model_encoder(states)
+        self.print_encoder_lengths(states, prefix="ENCODER LENGTHS")
 
     def policy(self, states):
         """Since we are dealing with speech, we need to waitk w.r.t
@@ -332,7 +526,7 @@ class FairseqSimulSTAgent(SpeechAgent):
             return READ_ACTION
 
         waitk = self.args.test_waitk
-        src_len = math.ceil(states.encoder_states["encoder_out"][0].size(0) // self.pre_decision_ratio)
+        src_len = states.encoder_states["encoder_out"][0].size(0)
         tgt_len = len(states.units.target)
 
         if src_len - tgt_len < waitk and not states.finish_read():
@@ -341,6 +535,9 @@ class FairseqSimulSTAgent(SpeechAgent):
         else:
             # logger.info(f"Write, src_len: {src_len} tgt_len: {tgt_len}")
             # pdb.set_trace()
+            if states.finish_read():
+                # encode the last few sources (+1 eos)
+                self.update_states_read(states)
 
             tgt_indices = self.to_device(
                 torch.LongTensor(
@@ -352,7 +549,7 @@ class FairseqSimulSTAgent(SpeechAgent):
             logits, extra = self.model.forward_decoder(
                 prev_output_tokens=tgt_indices,
                 encoder_out=states.encoder_states,
-                incremental_state=states.incremental_states,
+                incremental_state=states.dec_incremental_states,
             )
 
             states.decoder_out = logits
