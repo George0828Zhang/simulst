@@ -523,6 +523,11 @@ class FairseqSimulSTAgent(SpeechAgent):
         pre-decision is handled by self.speech_segment_size.
         """
         if not getattr(states, "encoder_states", None):
+            # This is a rare case where source speech finished before we had enough
+            # duration to compute a single text state. since simuleval will not call 
+            # update_states_read if there're no new frames, we'll call it here.
+            if states.finish_read():
+                self.update_states_read(states)
             return READ_ACTION
 
         waitk = self.args.test_waitk

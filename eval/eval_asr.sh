@@ -21,7 +21,7 @@ else
 fi
 
 mkdir -p ${RESULTS}
-for lang in de es fr it pt nl ru ro; do
+for lang in de ; do
     echo "# evaluating lang: ${lang}"
     tsv=${DATA}/${SPLIT}_${lang}_asr.tsv
     tail +2 ${tsv} | cut -f2 > ${RESULTS}/feats.${lang}
@@ -32,9 +32,9 @@ for lang in de es fr it pt nl ru ro; do
         --config-yaml ${CONF} \
         --gen-subset ${SPLIT}_de_asr,${SPLIT}_es_asr \
         --task speech_to_text_infer --do-asr \
-        --data-buffer-size 128 \
+        --buffer-size 128 --batch-size 128 \
         --inference-config-yaml infer_asr.yaml \
-        --path ${CHECKDIR}/${CHECKPOINT_FILENAME} --max-tokens 8000 \
+        --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
         --model-overrides '{"load_pretrained_encoder_from": None}' \
         ${EXTRAARGS} | \
     grep -E "H-[0-9]+" | \
