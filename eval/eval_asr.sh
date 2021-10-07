@@ -9,7 +9,7 @@ CHECKDIR=${EXP}/checkpoints/${TASK}
 RESULTS=asr.${SPLIT}.results/
 AVG=true
 
-EXTRAARGS="--skip-invalid-size-inputs-valid-test"
+EXTRAARGS=""
 
 if [[ $AVG == "true" ]]; then
     CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt

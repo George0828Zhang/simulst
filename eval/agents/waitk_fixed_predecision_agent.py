@@ -121,7 +121,7 @@ class FairseqSimulSTAgent(SpeechAgent):
 
     def __init__(self, args):
         super().__init__(args)
-
+        logger.debug(args)
         self.incremental_encoder = args.incremental_encoder
         self.full_sentence = args.full_sentence
         self.segment_type = args.segment_type
@@ -497,6 +497,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         shrunk_len = states.shrunk_length
         shrunk_state_len = states.shrunk_states.size(0)
         encoder_len = 0
+        tgt_len = len(states.units.target)
 
         if getattr(states, "encoder_states", None) is not None:
             encoder_len = states.encoder_states["encoder_out"][0].size(0)
@@ -504,7 +505,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         finish = ", RECV_ALL" if states.finish_read() else ""
 
         logger.debug(
-            f"{prefix} SRC: {source_len}, SPH: {shrunk_len}/{speech_len}, TXT: {encoder_len}/{shrunk_state_len}{finish}")
+            f"{prefix} SRC: {source_len}, SPH: {shrunk_len}/{speech_len}, TXT: {encoder_len}/{shrunk_state_len}, TGT: {tgt_len}{finish}")
 
     def update_states_read(self, states):
         # Happens after a read action.

@@ -59,29 +59,30 @@ OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.${DATANAME}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]]; then
-  BLEU_TOK=zh
-  UNIT=char
-  NO_SPACE="--no-space"
+    BLEU_TOK=zh
+    UNIT=char
+    NO_SPACE="--no-space"
 fi
 
 simuleval \
-  --agent ${AGENT} \
-  --user-dir ${USERDIR} \
-  --source ${SRC_FILE} \
-  --target ${TGT_FILE} \
-  --data-bin ${DATA} \
-  --config config_st.yaml \
-  --model-path ${CHECKPOINT} \
-  --tgt-splitter-path ${SPM_PREFIX}.model \
-  --output ${OUTPUT} \
-  --chunked-read 7 \
-  --overlap 1 \
-  --incremental-encoder \
-  --sacrebleu-tokenizer ${BLEU_TOK} \
-  --eval-latency-unit ${UNIT} \
-  --segment-type ${UNIT} \
-  ${NO_SPACE} \
-  --scores \
-  --test-waitk ${WAITK} \
-  --port ${PORT} \
-  --workers ${WORKERS}
+    --agent ${AGENT} \
+    --user-dir ${USERDIR} \
+    --source ${SRC_FILE} \
+    --target ${TGT_FILE} \
+    --data-bin ${DATA} \
+    --config config_st.yaml \
+    --model-path ${CHECKPOINT} \
+    --tgt-splitter-path ${SPM_PREFIX}.model \
+    --output ${OUTPUT} \
+    --chunked-read 7 \
+    --overlap 1 \
+    --incremental-encoder \
+    --sacrebleu-tokenizer ${BLEU_TOK} \
+    --eval-latency-unit ${UNIT} \
+    --segment-type ${UNIT} \
+    ${NO_SPACE} \
+    --scores \
+    --test-waitk ${WAITK} \
+    --port ${PORT} \
+    --workers ${WORKERS}
+    # --full-sentence \

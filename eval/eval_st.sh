@@ -6,18 +6,21 @@ EXP=../exp
 CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
 RESULTS=${TASK}.${SPLIT}.results/
-AVG=true
+AVG=false
+BLEU_TOK=13a
 
-EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
+if [[ ${TGT} == "zh" ]]; then
+    BLEU_TOK=zh
+fi
 GENARGS="--beam 1 --remove-bpe sentencepiece"
 
 export CUDA_VISIBLE_DEVICES=0
 
 if [[ $AVG == "true" ]]; then
     CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-    # python ../scripts/average_checkpoints.py \
-    #     --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-    #     --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
+    python ../scripts/average_checkpoints.py \
+        --inputs ${CHECKDIR} --num-best-checkpoints 5 \
+        --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
 else
     CHECKPOINT_FILENAME=checkpoint_best.pt
 fi
@@ -45,4 +48,4 @@ python -m sacrebleu ${RESULTS}/refs.${lang} \
     -i ${RESULTS}/hyps.${lang} \
     -m bleu \
     --width 2 \
-    --tok 13a -lc | tee ${RESULTS}/score.${lang}
+    --tok ${BLEU_TOK} | tee ${RESULTS}/score.${lang}
