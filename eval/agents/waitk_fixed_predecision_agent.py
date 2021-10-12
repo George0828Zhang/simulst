@@ -146,17 +146,16 @@ class FairseqSimulSTAgent(SpeechAgent):
         # self.speech_segment_size *= 7
 
         args.global_cmvn = None
-        if args.config:
+        if args.global_stats:
+            logger.info(f'Global CMVN: {args.global_stats}')
+            args.global_cmvn = np.load(args.global_stats)
+        elif args.config:
             with open(os.path.join(args.data_bin, args.config), "r") as f:
                 config = yaml.load(f, Loader=yaml.BaseLoader)
 
             if "global_cmvn" in config:
+                logger.info(f'Global CMVN: {config["global_cmvn"]["stats_npz_path"]}')
                 args.global_cmvn = np.load(config["global_cmvn"]["stats_npz_path"])
-
-        if args.global_stats:
-            with PathManager.open(args.global_stats, "r") as f:
-                global_cmvn = json.loads(f.read())
-                args.global_cmvn = {"mean": global_cmvn["mean"], "std": global_cmvn["stddev"]}
 
         self.feature_extractor = OnlineFeatureExtractor(args)
 

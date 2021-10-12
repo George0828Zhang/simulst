@@ -35,6 +35,11 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
+    -c|--cmvn)
+      CMVN="$2"
+      shift # past argument
+      shift # past value
+      ;;
     *)    # unknown option
       POSITIONAL+=("$1") # save it in an array for later
       shift # past argument
@@ -55,7 +60,7 @@ WORKERS=2
 BLEU_TOK=13a
 UNIT=word
 DATANAME=$(basename $(dirname ${DATA}))
-OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.${DATANAME}
+OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.test_${WAITK}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]]; then
@@ -71,6 +76,7 @@ simuleval \
     --target ${TGT_FILE} \
     --data-bin ${DATA} \
     --config config_st.yaml \
+    --global-stats ${CMVN} \
     --model-path ${CHECKPOINT} \
     --tgt-splitter-path ${SPM_PREFIX}.model \
     --output ${OUTPUT} \

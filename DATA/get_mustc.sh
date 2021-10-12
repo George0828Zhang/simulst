@@ -9,7 +9,6 @@ if [ "$TGT" == "zh" ]; then
 fi
 WORKERS=1
 
-UPDATE=$(realpath ../scripts/update_config.py)
 FAIRSEQ=~/utility/fairseq
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 source ~/envs/apex/bin/activate
@@ -29,7 +28,7 @@ else
   echo "processing ${OUTDIR}"
   python prep_mustc_data.py \
     --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-    --langs $TGT --cmvn-type global ${EXTRA}
+    --langs $TGT --cmvn-type utterance ${EXTRA}
 fi
 
 
