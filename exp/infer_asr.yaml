@@ -1,2 +1,3 @@
 eval_wer: true
-print_samples: false # phoneme, hard to understance...
+post_process: sentencepiece
+print_samples: true

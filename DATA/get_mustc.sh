@@ -5,7 +5,7 @@ DATA_ROOT=/livingrooms/george/mustc
 vocab=8000
 vtype=unigram
 if [ "$TGT" == "zh" ]; then
-  EXTRA="--jieba"
+    EXTRA="--jieba"
 fi
 WORKERS=1
 
@@ -18,27 +18,27 @@ OUTDIR=${DATA_ROOT}/${SRC}-${TGT}
 # ST
 feats=${OUTDIR}/fbank80.zip
 if [ -f ${feats} ]; then
-  echo "${feats} already exists. It is likely that you set the wrong language which is already processed."
-  echo "Please change data root or clear ${feats} before continuing."
-  echo "Alternatively uncomment the command below to re-process manifest only."
-  # python prep_mustc_data.py \
-  #   --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-  #   --langs $TGT --manifest-only ${EXTRA}
+    echo "${feats} already exists. It is likely that you set the wrong language which is already processed."
+    echo "Please change data root or clear ${feats} before continuing."
+    echo "Alternatively uncomment the command below to re-process manifest only."
+    # python prep_mustc_data.py \
+    #   --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
+    #   --langs $TGT --manifest-only ${EXTRA}
 else
-  echo "processing ${OUTDIR}"
-  python prep_mustc_data.py \
-    --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-    --langs $TGT --cmvn-type utterance ${EXTRA}
+    echo "processing ${OUTDIR}"
+    python prep_mustc_data.py \
+        --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
+        --langs $TGT --cmvn-type utterance ${EXTRA}
 fi
 
 
-mkdir -p g2p_logdir
+mkdir -p enc_logdir
 for split in "dev" "tst-COMMON" "tst-HE" "train"; do
-  echo "extract phones for ${split}"
-  python ./g2p_encode.py \
-    --parallel-process-num ${WORKERS} --logdir g2p_logdir \
-    --lower-case --do-filter --use-word-start --no-punc \
-    --reserve-word ./mustc_noise.list \
-    --data-path ${OUTDIR}/${split}_st.tsv \
-    --out-path ${OUTDIR}/${split}_pho_st.tsv
+    echo "extract phones for ${split}"
+    python ./english_encode.py \
+        --parallel-process-num ${WORKERS} --logdir enc_logdir \
+        --lower-case --do-filter --no-punc \
+        --reserve-word ./mustc_noise.list \
+        --data-path ${OUTDIR}/${split}_st.tsv \
+        --out-path ${OUTDIR}/${split}_asr_st.tsv
 done
