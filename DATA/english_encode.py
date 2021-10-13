@@ -6,7 +6,7 @@
 import argparse
 import itertools
 import logging
-import re
+import regex as re
 import time
 
 from data_utils import (
@@ -22,7 +22,6 @@ def parse():
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--out-path", type=str, required=True)
     parser.add_argument("--lower-case", action="store_true")
-    parser.add_argument("--do-filter", action="store_true") 
     parser.add_argument("--no-punc", action="store_true")
     parser.add_argument("--reserve-word", type=str, default="")
     parser.add_argument(
@@ -38,46 +37,23 @@ def parse():
 
 
 def process_sent(sent, res_wrds, args):
-    if args.do_filter:
-        sent = re.sub("-", " ", sent)
-        sent = re.sub("—", " ", sent)
-    if len(res_wrds) > 0:
-        wrds = sent.split()
-        wrds = ["SPLIT_ME " + w +
-                " SPLIT_ME" if w in res_wrds else w for w in wrds]
-        sents = [x.strip()
-                 for x in " ".join(wrds).split("SPLIT_ME") if x.strip() != ""]
-    else:
-        sents = [sent]
-    if args.lower_case:
-        sents = [s.lower() if s not in res_wrds else s for s in sents]
+    """
+    1. reserve words
+    2. lower case
+    3. remove punctuation
+    """
 
-    pho_seqs = [do_tok(s, res_wrds, i == 0) for i, s in enumerate(sents)]
-    pho_seq = list(itertools.chain.from_iterable(pho_seqs))
+    # replace reserved words
+    pattern = re.compile("(%s)" % "|".join(map(re.escape, res_wrds.keys())))
+    sent = pattern.sub(lambda w: res_wrds[w.string[w.start():w.end()]], sent)
+
+    # lowercase remove punc
     if args.no_punc:
-        pho_seq = remove_punc(pho_seq)
-    return " ".join(pho_seq)
-
-
-def remove_punc(sent):
-    ns = []
-    regex = re.compile("[^a-zA-Z0-9 ]")
-    for p in sent:
-        if (not regex.search(p)):
-            if p == " " and (len(ns) == 0 or ns[-1] == " "):
-                continue
-            ns.append(p)
-    return ns
-
-
-def do_tok(sent, res_wrds, is_first_sent):
-    if sent in res_wrds:
-        pho_seq = [res_wrds[sent]]
-    else:
-        pho_seq = sent.split()
-    if not is_first_sent:
-        pho_seq = [" "] + pho_seq  # add space to separate
-    return pho_seq
+        sent = re.sub(r'[\p{P}\p{Sm}]+', " ", sent)
+    if args.lower_case:
+        sent = " ".join(w if w in res_wrds.values() else w.lower()
+                        for w in sent.split())
+    return sent
 
 
 def load_reserve_word(reserve_word):

@@ -32,14 +32,14 @@ DICT=${SPM_PREFIX}.txt
 
 if [[ ! -f ${DATA_DIR}/$SPM_MODEL ]]; then
     echo "spm_train on ${BPE_TRAIN}..."
-    ccvg=1.0    
+    ccvg=1.0
     python $spm_train --input=${BPE_TRAIN} \
         --model_prefix=${DATA_DIR}/${SPM_PREFIX} \
         --vocab_size=${vocab} \
         --character_coverage=${ccvg} \
         --model_type=${vtype} \
         --normalization_rule_name=nmt_nfkc_cf
-    
+
     cut -f1 ${DATA_DIR}/${SPM_PREFIX}.vocab | tail -n +4 | sed "s/$/ 100/g" > ${DATA_DIR}/${DICT}
     echo "done. Total: $(cat ${DATA_DIR}/${DICT} | wc -l). first few tokens:"
     head ${DATA_DIR}/${DICT}

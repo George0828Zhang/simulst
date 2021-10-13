@@ -34,10 +34,10 @@ fi
 
 mkdir -p enc_logdir
 for split in "dev" "tst-COMMON" "tst-HE" "train"; do
-    echo "extract phones for ${split}"
+    echo "extract transcription for ${split}"
     python ./english_encode.py \
         --parallel-process-num ${WORKERS} --logdir enc_logdir \
-        --lower-case --do-filter --no-punc \
+        --lower-case --no-punc \
         --reserve-word ./mustc_noise.list \
         --data-path ${OUTDIR}/${split}_st.tsv \
         --out-path ${OUTDIR}/${split}_asr_st.tsv
