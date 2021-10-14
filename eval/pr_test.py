@@ -92,11 +92,10 @@ if __name__ == '__main__':
     cfg.dataset.max_tokens = max_tokens
     cfg.model.load_pretrained_encoder_from = None
     cfg.generation.update({
-        "sampling": True,
+        # "sampling": True,
         # "sampling_topk": 100,
-        "sampling_topp": 0.68,
-        "beam": 5,
-        # "nbest": 10,
+        # "sampling_topp": 0.68,
+        "beam": 10,
         "max_len_a": 0.1,
         "max_len_b": 10,
     })
@@ -195,6 +194,7 @@ if __name__ == '__main__':
             x = tokenizer.decode(x)
         return x
 
+    src_dict = task.src_dict
     tgt_dict = task.tgt_dict
 
     for _, sample in enumerate(itr):
@@ -229,10 +229,22 @@ if __name__ == '__main__':
         top_idx = scores.view(-1, generator.beam_size).argmax(-1)
 
         for i, sample_id in enumerate(sample["id"].tolist()):
-            target_tokens = (
-                utils.strip_pad(sample["target"][i, :],
-                                tgt_dict.pad()).int().cpu()
+            src_txt_tokens = utils.strip_pad(
+                sample["net_input"]["src_txt_tokens"][i, :],
+                src_dict.pad()
+            ).int().cpu()
+            src_txt_str = src_dict.string(
+                src_txt_tokens,
+                cfg.common_eval.post_process,
+                escape_unk=True,
+                extra_symbols_to_ignore={},
             )
+            src_txt_str = decode_fn(src_txt_str)
+
+            target_tokens = utils.strip_pad(
+                sample["target"][i, :],
+                tgt_dict.pad()
+            ).int().cpu()
             target_str = tgt_dict.string(
                 target_tokens,
                 cfg.common_eval.post_process,
@@ -241,10 +253,11 @@ if __name__ == '__main__':
             )
             target_str = decode_fn(target_str)
 
+            print("S-{}\t{}".format(sample_id, src_txt_str), file=output_file)
             print("T-{}\t{}".format(sample_id, target_str), file=output_file)
 
             # Process top prediction
-            def process_prediction(hypo):
+            def process_prediction(hypo, tag="H"):
                 hypo_tokens = (
                     hypo["tokens"].int().cpu()
                 )
@@ -258,9 +271,9 @@ if __name__ == '__main__':
                 score = hypo["score"] / math.log(2)  # convert to base 2
                 # original hypothesis (after tokenization and BPE)
                 print(
-                    "H-{}\t{}\t{}".format(sample_id, score, hypo_str),
+                    "{}-{}\t{}\t{}".format(tag, sample_id, score, hypo_str),
                     file=output_file,
                 )
 
             process_prediction(hypos[i][0])
-            process_prediction(hypos[i][top_idx[i]])
+            process_prediction(hypos[i][top_idx[i]], tag="M")
