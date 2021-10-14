@@ -36,17 +36,17 @@ class WaitkST2TTransformerModel(ST2TTransformerModel):
     def add_args(parser):
         """Add model-specific arguments to the parser."""
         super(WaitkST2TTransformerModel, WaitkST2TTransformerModel).add_args(parser)
-        # parser.add_argument(
-        #     '--waitk-max',
-        #     type=int,
-        #     required=True,
-        #     help='maximum wait-k for incremental reading. k is sampled from [1, waitk_max]')
         parser.add_argument(
             '--waitk-list',
             type=str,
             required=True,
             help='list of choices of wait-k for incremental reading.'
             'k is sampled from this list. e.g. 3,9,15,21,27')
+        parser.add_argument(
+            '--waitk-stride',
+            type=int,
+            required=True,
+            help='number of encoder states per read action.')
 
     @classmethod
     def build_decoder(cls, args, task, embed_tokens):
@@ -65,8 +65,8 @@ class WaitkST2TTransformerModel(ST2TTransformerModel):
         return max(self.decoder.waitk_list)
 
     @property
-    def pre_decision_ratio(self):
-        return self.decoder.pre_decision_ratio
+    def waitk_stride(self):
+        return self.decoder.waitk_stride
 
 
 class WaitkTransformerDecoder(TransformerDecoder):
@@ -83,7 +83,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
         super().__init__(args, dictionary, embed_tokens, **kwargs)
 
         self.waitk_list = [int(k) for k in args.waitk_list.split(',')]
-        self.pre_decision_ratio = 1  # 1 for text model, > 1 for speech.
+        self.waitk_stride = args.waitk_stride
         for k in self.waitk_list:
             if k < 1:
                 raise ValueError("waitk lagging can only be positive.")
@@ -92,14 +92,13 @@ class WaitkTransformerDecoder(TransformerDecoder):
         # change to waitk layer.
         return WaitkTransformerDecoderLayer(args, no_encoder_attn)
 
-    def get_attention_mask(self, x, src_len):
+    def cross_attention_mask(self, x, src_len):
 
-        # waitk = torch.randint(1, self.waitk_max + 1, [1]).item()
         choice = torch.randint(0, len(self.waitk_list), [1]).item()
         waitk = self.waitk_list[choice]
-        pre_decision_ratio = self.pre_decision_ratio
+        waitk_stride = self.waitk_stride
 
-        pooled_src_len = src_len // pre_decision_ratio + 1
+        pooled_src_len = src_len // waitk_stride + 1
 
         if waitk >= pooled_src_len:
             return None
@@ -116,7 +115,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
         # upsample
         encoder_attn_mask = encoder_attn_mask.repeat_interleave(
-            pre_decision_ratio, dim=1)[:, :src_len]
+            waitk_stride, dim=1)[:, :src_len]
 
         return encoder_attn_mask
 
@@ -132,17 +131,19 @@ class WaitkTransformerDecoder(TransformerDecoder):
         """
         add encoder_attn_mask (wait-k masking) at training time. otherwise is the same as original.
         """
-
         bs, slen = prev_output_tokens.size()
-        encoder_states: Optional[Tensor] = None
-        encoder_padding_mask: Optional[Tensor] = None
+        if alignment_layer is None:
+            alignment_layer = self.num_layers - 1
+
+        enc: Optional[Tensor] = None
+        padding_mask: Optional[Tensor] = None
         if encoder_out is not None and len(encoder_out["encoder_out"]) > 0:
-            encoder_states = encoder_out["encoder_out"][0]
+            enc = encoder_out["encoder_out"][0]
             assert (
-                encoder_states.size()[1] == bs
-            ), f"Expected enc.shape == (t, {bs}, c) got {encoder_states.shape}"
+                enc.size()[1] == bs
+            ), f"Expected enc.shape == (t, {bs}, c) got {enc.shape}"
         if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
-            encoder_padding_mask = encoder_out["encoder_padding_mask"][0]
+            padding_mask = encoder_out["encoder_padding_mask"][0]
 
         # embed positions
         positions = None
@@ -152,7 +153,6 @@ class WaitkTransformerDecoder(TransformerDecoder):
             )
 
         if incremental_state is not None:
-            # full_length = prev_output_tokens.size(1)
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
@@ -160,28 +160,35 @@ class WaitkTransformerDecoder(TransformerDecoder):
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
 
+        if self.quant_noise is not None:
+            x = self.quant_noise(x)
+
         if self.project_in_dim is not None:
             x = self.project_in_dim(x)
 
         if positions is not None:
             x += positions
+
+        if self.layernorm_embedding is not None:
+            x = self.layernorm_embedding(x)
+
         x = self.dropout_module(x)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
         self_attn_padding_mask: Optional[Tensor] = None
-        if prev_output_tokens.eq(self.padding_idx).any():
+        if self.cross_self_attention or prev_output_tokens.eq(self.padding_idx).any():
             self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
 
         # decoder layers
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
         for idx, layer in enumerate(self.layers):
-            if incremental_state is None:
+            if incremental_state is None and not full_context_alignment:
                 # training time
                 self_attn_mask = self.buffered_future_mask(x)
-                encoder_attn_mask = self.get_attention_mask(x, encoder_states.size(0))
+                encoder_attn_mask = self.cross_attention_mask(x, enc.size(0))
             else:
                 # inference time
                 self_attn_mask = None
@@ -190,10 +197,10 @@ class WaitkTransformerDecoder(TransformerDecoder):
                 #     x.expand(full_length, -1, -1), encoder_states.size(0))
                 # encoder_attn_mask = encoder_attn_mask[-1:, :] if encoder_attn_mask is not None else None
 
-            x, attn = layer(
+            x, layer_attn, _ = layer(
                 x,
-                encoder_states,
-                encoder_padding_mask,
+                enc,
+                padding_mask,
                 encoder_attn_mask=encoder_attn_mask,
                 incremental_state=incremental_state,
                 self_attn_mask=self_attn_mask,

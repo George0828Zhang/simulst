@@ -1,7 +1,5 @@
 import math
 import os
-import json
-import pdb
 import logging
 import numpy as np
 import torch
@@ -10,7 +8,7 @@ import yaml
 from fairseq import utils, checkpoint_utils, tasks
 from fairseq.file_io import PathManager
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+
 try:
     from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
     from simuleval.agents import SpeechAgent
@@ -121,13 +119,16 @@ class FairseqSimulSTAgent(SpeechAgent):
 
     def __init__(self, args):
         super().__init__(args)
+        if args.debug:
+            logger.setLevel(logging.DEBUG)
+
         logger.debug(args)
         self.incremental_encoder = args.incremental_encoder
         self.full_sentence = args.full_sentence
         self.segment_type = args.segment_type
         self.workers = args.workers
         self.speech_segment_size *= args.chunked_read
-        logger.info(f"Chunked read size: {self.speech_segment_size} ms")
+        logger.info(f"Chunked read size: {self.speech_segment_size} ms (40x{args.chunked_read})")
         self.overlap = args.overlap
         logger.info(f"Overlap size: {self.overlap} (states)")
 
@@ -142,8 +143,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.args = args
 
         self.load_model_vocab(args)
-
-        # self.speech_segment_size *= 7
+        self.waitk_stride = self.model.waitk_stride
 
         args.global_cmvn = None
         if args.global_stats:
@@ -227,6 +227,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--segment-type", type=str, default="word", choices=["word", "char"],
                             help="Agent can send a word or a char to server at a time.")
         parser.add_argument("--workers", type=int, default=1)
+        parser.add_argument("--debug", default=False, action="store_true")
         # fmt: on
         return parser
 
@@ -425,8 +426,8 @@ class FairseqSimulSTAgent(SpeechAgent):
             else:
                 cutoff = nontail[-1].item() + 1
         else:
-            # fixed predecision
-            ratio = self.model.encoder.fixed_predecision_ratio
+            # fixed shrink
+            ratio = self.model.encoder.fixed_shrink_ratio
             cutoff = (speech_len // ratio) * ratio
 
         # update shrunk states
@@ -531,7 +532,10 @@ class FairseqSimulSTAgent(SpeechAgent):
             return READ_ACTION
 
         waitk = self.args.test_waitk
-        src_len = states.encoder_states["encoder_out"][0].size(0)
+        src_len = math.ceil(
+            states.encoder_states["encoder_out"][0].size(0)
+            // self.waitk_stride
+        )
         tgt_len = len(states.units.target)
 
         if src_len - tgt_len < waitk and not states.finish_read():

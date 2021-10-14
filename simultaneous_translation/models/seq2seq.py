@@ -58,7 +58,7 @@ class ST2TTransformerModel(S2TTransformerModel):
             help="shrink the encoder states based on ctc output.",
         )
         parser.add_argument(
-            "--fixed-predecision-ratio",
+            "--fixed-shrink-ratio",
             type=int,
             default=1,
             help="shrink speech encoder output as fixed-length segments.",
@@ -327,7 +327,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         self.speech_encoder = speech_encoder
         self.text_encoder = text_encoder
         self.do_weighted_shrink = args.do_weighted_shrink
-        self.fixed_predecision_ratio = args.fixed_predecision_ratio
+        self.fixed_shrink_ratio = args.fixed_shrink_ratio
         self.dropout_module = FairseqDropout(
             args.dropout, module_name=self.__class__.__name__
         )
@@ -424,7 +424,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
             speech_padding_mask = speech_states.new_zeros(
                 (B, S), dtype=torch.bool)
 
-        ratio = self.fixed_predecision_ratio
+        ratio = self.fixed_shrink_ratio
         v = speech_states.transpose(0, 1)
         new_speech_padding_mask = speech_padding_mask
         buckets = math.ceil(S / ratio)
@@ -529,8 +529,8 @@ def st2t_transformer_s(args):
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
     if args.do_weighted_shrink:
-        args.fixed_predecision_ratio = 1
+        args.fixed_shrink_ratio = 1
     else:
-        getattr(args, "fixed_predecision_ratio", 1)
+        getattr(args, "fixed_shrink_ratio", 1)
     args.share_decoder_input_output_embed = True
     s2t_transformer_s(args)

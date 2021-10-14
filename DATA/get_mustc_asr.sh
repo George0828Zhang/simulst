@@ -66,6 +66,7 @@ for l in $LANGS; do
     python ${UPDATE} \
         --path ${DATA_ROOT}/en-${l}/config_st.yaml \
         --cmvn-type utterance \
+        --rm-src-bpe-tokenizer \
         --src-vocab-filename ${VOCAB}
 done
 python ${UPDATE} \

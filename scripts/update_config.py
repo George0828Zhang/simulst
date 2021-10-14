@@ -5,7 +5,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", type=str, required=True)
     parser.add_argument("--src-vocab-filename", type=str, default=None)
-    parser.add_argument("--cmvn-type", choices=["global", "utterance"], default=None)
+    parser.add_argument(
+        "--cmvn-type", choices=["global", "utterance"], default=None)
+    parser.add_argument("--rm-src-bpe-tokenizer", action="store_true")
 
     # for asr
     parser.add_argument("--rm-bpe-tokenizer", action="store_true")
@@ -26,6 +28,8 @@ if __name__ == "__main__":
             config["transforms"][split][0] = f"{args.cmvn_type}_cmvn"
     if args.rm_bpe_tokenizer and "bpe_tokenizer" in config:
         del config["bpe_tokenizer"]
+    if args.rm_src_bpe_tokenizer and "src_bpe_tokenizer" in config:
+        del config["src_bpe_tokenizer"]
     if args.vocab_filename is not None:
         config["vocab_filename"] = args.vocab_filename
 

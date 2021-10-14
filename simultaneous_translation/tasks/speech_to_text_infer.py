@@ -73,11 +73,11 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             # test override.
             logger.warning(f"Train test mismatch: training wait-{waitk}, while testing wait-{test_waitk}.")
             waitk = test_waitk
-        pre_ratio = 1
+        stride = 1
         if waitk is not None:
-            pre_ratio = getattr(models[0], "pre_decision_ratio", 1)
+            stride = getattr(models[0], "waitk_stride", 1)
             seq_gen_cls = WaitkSequenceGenerator
-            extra = {"waitk": waitk, "pre_decision_ratio": pre_ratio}
+            extra = {"waitk": waitk, "waitk_stride": stride}
             if extra_gen_cls_kwargs:
                 extra_gen_cls_kwargs.update(extra)
             else:

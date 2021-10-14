@@ -152,8 +152,6 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
-        cache_encoder: bool = True,
-        cache_decoder: bool = True,
     ):
         """
         Args:
@@ -174,8 +172,6 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
         if prev_self_attn_state is not None:
-            # if incremental_state is None:
-            #     incremental_state = {}
             prev_key, prev_value = prev_self_attn_state[:2]
             saved_state: Dict[str, Optional[Tensor]] = {
                 "prev_key": prev_key,
@@ -185,13 +181,38 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
                 saved_state["prev_key_padding_mask"] = prev_self_attn_state[2]
             assert incremental_state is not None
             self.self_attn._set_input_buffer(incremental_state, saved_state)
+        _self_attn_input_buffer = self.self_attn._get_input_buffer(
+            incremental_state)
+        if self.cross_self_attention and not (
+            incremental_state is not None
+            and _self_attn_input_buffer is not None
+            and "prev_key" in _self_attn_input_buffer
+        ):
+            if self_attn_mask is not None:
+                assert encoder_out is not None
+                self_attn_mask = torch.cat(
+                    (x.new_zeros(x.size(0), encoder_out.size(0)), self_attn_mask), dim=1
+                )
+            if self_attn_padding_mask is not None:
+                if encoder_padding_mask is None:
+                    assert encoder_out is not None
+                    encoder_padding_mask = self_attn_padding_mask.new_zeros(
+                        encoder_out.size(1), encoder_out.size(0)
+                    )
+                self_attn_padding_mask = torch.cat(
+                    (encoder_padding_mask, self_attn_padding_mask), dim=1
+                )
+            assert encoder_out is not None
+            y = torch.cat((encoder_out, x), dim=0)
+        else:
+            y = x
 
         x, attn = self.self_attn(
             query=x,
-            key=x,
-            value=x,
+            key=y,
+            value=y,
             key_padding_mask=self_attn_padding_mask,
-            incremental_state=incremental_state if cache_decoder else None,
+            incremental_state=incremental_state,
             need_weights=False,
             attn_mask=self_attn_mask,
         )
@@ -205,8 +226,6 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
             if self.normalize_before:
                 x = self.encoder_attn_layer_norm(x)
             if prev_attn_state is not None:
-                # if incremental_state is None:
-                #     incremental_state = {}
                 prev_key, prev_value = prev_attn_state[:2]
                 saved_state: Dict[str, Optional[Tensor]] = {
                     "prev_key": prev_key,
@@ -215,7 +234,8 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
                 if len(prev_attn_state) >= 3:
                     saved_state["prev_key_padding_mask"] = prev_attn_state[2]
                 assert incremental_state is not None
-                self.encoder_attn._set_input_buffer(incremental_state, saved_state)
+                self.encoder_attn._set_input_buffer(
+                    incremental_state, saved_state)
             # for simul trans, you CANNOT cache encoder states! in inference,
             # the encoder should be constantly updated.
             x, attn = self.encoder_attn(
@@ -226,7 +246,8 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
                 attn_mask=encoder_attn_mask,
                 incremental_state=None,
                 static_kv=False,
-                need_weights=need_attn or (not self.training and self.need_attn),
+                need_weights=need_attn or (
+                    not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
             )
             x = self.dropout_module(x)
@@ -245,10 +266,20 @@ class WaitkTransformerDecoderLayer(TransformerDecoderLayer):
         x = self.residual_connection(x, residual)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        return x, attn
-
-    def make_generation_fast_(self, need_attn: bool = False, **kwargs):
-        self.need_attn = need_attn
+        if self.onnx_trace and incremental_state is not None:
+            saved_state = self.self_attn._get_input_buffer(incremental_state)
+            assert saved_state is not None
+            if self_attn_padding_mask is not None:
+                self_attn_state = [
+                    saved_state["prev_key"],
+                    saved_state["prev_value"],
+                    saved_state["prev_key_padding_mask"],
+                ]
+            else:
+                self_attn_state = [saved_state["prev_key"],
+                                   saved_state["prev_value"]]
+            return x, attn, self_attn_state
+        return x, attn, None
 
     def prune_incremental_state(self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]):
         input_buffer = self.self_attn._get_input_buffer(incremental_state)

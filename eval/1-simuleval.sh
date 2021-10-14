@@ -49,6 +49,12 @@ done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
+# defaults
+AGENT=${AGENT:-"./agents/waitk_fixed_predecision_agent.py"}
+EXP=${EXP:-"../exp"}
+SRC_FILE=${SRC_FILE:-"./data/dev.wav_list"}
+TGT_FILE=${TGT_FILE:-"./data/dev.de"}
+CMVN=${CMVN:-"./data/gcmvn.npz"}
 
 source ${EXP}/data_path.sh
 
@@ -80,7 +86,7 @@ simuleval \
     --model-path ${CHECKPOINT} \
     --tgt-splitter-path ${SPM_PREFIX}.model \
     --output ${OUTPUT} \
-    --chunked-read 7 \
+    --chunked-read 9 \
     --overlap 1 \
     --incremental-encoder \
     --sacrebleu-tokenizer ${BLEU_TOK} \
@@ -90,5 +96,6 @@ simuleval \
     --scores \
     --test-waitk ${WAITK} \
     --port ${PORT} \
-    --workers ${WORKERS}
+    --workers ${WORKERS} \
+    ${POSITIONAL[@]}
     # --full-sentence \
