@@ -1,3 +1,8 @@
 eval_wer: true
 post_process: sentencepiece
 print_samples: true
+eval_wer_args:
+  wer_tokenizer: 13a
+  wer_remove_punct: true
+  wer_lowercase: true
+  wer_char_level: false

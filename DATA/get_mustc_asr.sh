@@ -38,7 +38,7 @@ if [[ ! -f ${DATA_DIR}/$SPM_MODEL ]]; then
         --vocab_size=${vocab} \
         --character_coverage=${ccvg} \
         --model_type=${vtype} \
-        --normalization_rule_name=nmt_nfkc_cf
+        --normalization_rule_name=nmt_nfkc
 
     cut -f1 ${DATA_DIR}/${SPM_PREFIX}.vocab | tail -n +4 | sed "s/$/ 100/g" > ${DATA_DIR}/${DICT}
     echo "done. Total: $(cat ${DATA_DIR}/${DICT} | wc -l). first few tokens:"
@@ -83,3 +83,5 @@ python ${UPDATE} \
     --path ${DATA_DIR}/${CONF} \
     --bpe-tokenizer ${DATA_DIR}/${SPM_MODEL} \
     --vocab-filename ${DICT}
+
+cat ${DATA_DIR}/${CONF}
