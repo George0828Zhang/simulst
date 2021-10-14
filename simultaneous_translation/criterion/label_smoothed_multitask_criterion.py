@@ -7,7 +7,8 @@ import math
 from dataclasses import dataclass, field
 import torch
 from typing import Optional
-from fairseq import metrics
+from torch.distributions.categorical import Categorical
+from fairseq import utils, metrics
 from fairseq.logging.meters import safe_round
 from fairseq.criterions import (
     register_criterion,
@@ -33,6 +34,14 @@ class LabelSmoothedMTLCriterionConfig(LabelSmoothedCTCCriterionConfig):
             "asr_factor*ctc_asr_loss + (1-asr_factor)*cross_entropy"
         },
     )
+    decoder_use_ctc: bool = field(
+        default=False,
+        metadata={"help": "use ctcloss for decoder loss."},
+    )
+    report_sinkhorn_dist: bool = field(
+        default=False,
+        metadata={"help": "print sinkhorn distance value."},
+    )
 
 
 @register_criterion(
@@ -45,6 +54,11 @@ class LabelSmoothedMTLCriterion(LabelSmoothedCTCCriterion):
         self.blank_idx = task.source_dictionary.bos()
         assert self.pad_idx == task.source_dictionary.pad()
         assert self.eos_idx == task.source_dictionary.eos()
+
+        self.decoder_use_ctc = cfg.decoder_use_ctc
+        if self.decoder_use_ctc:
+            logger.info("Using ctc loss for decoder!")
+        self.report_sinkhorn_dist = cfg.report_sinkhorn_dist
 
     def forward(self, model, sample, reduce=True):
         net_output = model(**sample["net_input"])
@@ -64,11 +78,39 @@ class LabelSmoothedMTLCriterion(LabelSmoothedCTCCriterion):
             "shrink_rate", [sample["target"].size(0)])[0]
 
         # cross_entropy for translation
-        ce_loss, nll_loss = self.compute_loss(
-            model, net_output, sample, reduce=reduce)
+        if self.decoder_use_ctc:
+            ce_loss, nll_loss = self.compute_ctc_loss(
+                model, net_output, sample["target"], reduce=reduce)
+        else:
+            ce_loss, nll_loss = self.compute_loss(
+                model, net_output, sample, reduce=reduce)
 
         # combine
         loss = (1 - self.asr_factor) * ce_loss + self.asr_factor * asr_loss
+
+        if self.report_sinkhorn_dist:
+            with torch.no_grad():
+                attn = encoder_out["attn"][0].float()
+                cost = -encoder_out["log_alpha"][0].float()
+
+                B, S, denom = attn.size()
+                dist = (cost * attn).mean() * B * S
+
+                # compute inversion rate
+                # expected value of position in source that aligns to each target
+                alignment = (utils.new_arange(attn) * attn).sum(-1)  # (N, L1)
+                inv_rate = alignment[:, :-1] - alignment[:, 1:]
+                inv_rate = (inv_rate / denom).clamp(min=0).float().sum()
+
+                try:
+                    entropy = Categorical(
+                        probs=attn.float()).entropy().sum() / denom
+                except ValueError:
+                    logger.warning(
+                        "entropy calculation failed because of invalid input!")
+                    entropy = 0
+        else:
+            dist = inv_rate = entropy = 0
 
         if self.report_accuracy:
             with torch.no_grad():
@@ -106,6 +148,10 @@ class LabelSmoothedMTLCriterion(LabelSmoothedCTCCriterion):
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
 
+            "sinkhorn_dist": dist,
+            "inv_rate": inv_rate,
+            "matching_entropy": entropy,
+
             "asr_recall": asr_recall,
             "asr_precision": asr_precision,
             "recall": recall,
@@ -127,11 +173,24 @@ class LabelSmoothedMTLCriterion(LabelSmoothedCTCCriterion):
                 result = result.cpu()
             return result
 
+        inv_rate = sum_logs("inv_rate")
+        sinkhorn_dist_sum = sum_logs("sinkhorn_dist")
+        matching_entropy = sum_logs("matching_entropy")
         sample_size = sum_logs("sample_size")
         nsentences = sum_logs("nsentences")
         asr_loss = sum_logs("asr_loss")
         ce_loss = sum_logs("ce_loss")
         shrink_rate = sum_logs("shrink_rate")
+
+        metrics.log_scalar(
+            "inversion_rate", inv_rate / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "sinkhorn_dist", sinkhorn_dist_sum / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "matching_entropy", matching_entropy / nsentences, nsentences, round=3
+        )
 
         metrics.log_scalar(
             "asr_loss", asr_loss / sample_size / math.log(2), sample_size, round=3
