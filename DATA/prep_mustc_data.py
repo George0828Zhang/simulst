@@ -33,7 +33,7 @@ from tqdm import tqdm
 import jieba_fast as jieba
 
 from fairseq.data.audio.audio_utils import get_waveform
-
+from text_processors import TextNormalizer
 log = logging.getLogger(__name__)
 
 
@@ -151,6 +151,8 @@ def process(args):
         # Generate TSV manifest
         print("Generating manifest...")
         train_text = []
+        src_normalizer = TextNormalizer("en")
+        tgt_normalizer = TextNormalizer(lang)
         for split in MUSTC.SPLITS:
             is_train_split = split.startswith("train")
             manifest = {c: [] for c in MANIFEST_COLUMNS}
@@ -159,8 +161,10 @@ def process(args):
                 manifest["id"].append(utt_id)
                 manifest["audio"].append(audio_paths[utt_id])
                 manifest["n_frames"].append(audio_lengths[utt_id])
+                src_utt = src_normalizer(src_utt)
                 manifest["src_text"].append(src_utt)
                 if lang == "zh" and args.jieba:
+                    tgt_utt = tgt_normalizer(tgt_utt)
                     tgt_utt = " ".join(jieba.cut(tgt_utt, cut_all=False))
                     tgt_utt = re.sub("\s\s+", " ", tgt_utt)
                 manifest["tgt_text"].append(tgt_utt)
