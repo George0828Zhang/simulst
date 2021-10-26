@@ -1,0 +1,11 @@
+eval_bleu: true
+generation_args:
+  beam: 5
+  max_len_a: 1.5
+  max_len_b: 10
+post_process: sentencepiece
+print_samples: true
+eval_bleu_args:
+  sacrebleu_tokenizer: zh
+  sacrebleu_lowercase: false
+  sacrebleu_char_level: false

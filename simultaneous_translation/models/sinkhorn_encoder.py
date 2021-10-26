@@ -4,9 +4,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# from collections import OrderedDict
 from fairseq import checkpoint_utils
 import math
 import logging
+import re
 
 import torch
 import torch.nn as nn
@@ -141,8 +143,11 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
 
     @classmethod
     def build_encoder(cls, args, task, encoder_embed_tokens, ctc_projection, decoder_embed_tokens):
-        cascade_encoder = super(ST2TSinkhornEncoderModel, cls).build_encoder(
+        encoder = super(ST2TSinkhornEncoderModel, cls).build_encoder(
             args, task, encoder_embed_tokens, ctc_projection)
+
+        cascade_encoder = ASNAugmentedEncoder(
+            args, encoder, task.tgt_dict, decoder_embed_tokens)
         if getattr(args, "load_pretrained_cascade_from", None):
             cascade_encoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=cascade_encoder, checkpoint=args.load_pretrained_cascade_from
@@ -151,10 +156,7 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
                 f"loaded pretrained cascade encoder from: "
                 f"{args.load_pretrained_cascade_from}"
             )
-
-        finalencoder = ASNAugmentedEncoder(
-            args, cascade_encoder, task.tgt_dict, decoder_embed_tokens)
-        return finalencoder
+        return cascade_encoder
 
     @classmethod
     def build_decoder(cls, args, task, decoder_embed_tokens):
@@ -209,6 +211,31 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
         return cls(encoder, decoder)
 
+    def forward_causal(
+        self,
+        src_tokens,
+        src_lengths,
+        src_txt_tokens=None,  # unused
+        src_txt_lengths=None,  # unused
+    ):
+        """changed encoder forward to forward_train.
+        added prev_output_tokens to encoder for ASN.
+        """
+        encoder_out = self.encoder.forward(
+            src_tokens=src_tokens,
+            src_lengths=src_lengths,
+        )
+        logits, decoder_out = self.decoder(
+            prev_output_tokens=None, encoder_out=encoder_out
+        )
+        decoder_out.update({
+            "encoder_out": encoder_out,
+            # speech_padding_mask is for the speech encoder output. asr-ctc uses this.
+            # encoder_padding_mask is for the cascade output. st-ctc uses this.
+            "padding_mask": encoder_out["encoder_padding_mask"][0],
+        })
+        return logits, decoder_out
+
     def forward(
         self,
         src_tokens,
@@ -236,8 +263,9 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
         })
         return logits, decoder_out
 
-    def generate(self, src_tokens, src_lengths, blank_idx=0, **unused):
-        return generate(self, src_tokens, src_lengths, blank_idx=blank_idx)
+    def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
+        logits, extra = self.forward_causal(src_tokens, src_lengths, None)
+        return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx)
 
 
 class ASNAugmentedEncoder(FairseqEncoder):
@@ -252,7 +280,7 @@ class ASNAugmentedEncoder(FairseqEncoder):
         self.causal_encoder = causal_encoder
 
         # add missing args
-        st2t_causal_encoder_s(args)
+        st2t_sinkhorn_encoder_s(args)
 
         args.decoder_normalize_before = args.encoder_normalize_before
         self.non_causal_layers = nn.ModuleList([
@@ -285,6 +313,8 @@ class ASNAugmentedEncoder(FairseqEncoder):
                 args.encoder_embed_dim, args.encoder_embed_dim * self.upsample_ratio)
 
         # below are for input target feeding
+        if args.mask_ratio == 1.0:
+            logger.info("No context provided to ASN.")
         self.mask_ratio = args.mask_ratio
         self.mask_uniform = args.mask_uniform
 
@@ -371,17 +401,20 @@ class ASNAugmentedEncoder(FairseqEncoder):
         encoder_states = causal_out["encoder_states"]
 
         # target feeding (noise + pos emb)
-        prev_tokens, prev_padding_mask = inject_noise(
-            prev_output_tokens,
-            self.tgt_dict,
-            ratio=self.mask_ratio,
-            uniform=self.mask_uniform,
-        )
+        if self.mask_ratio == 1.:
+            prev_states = prev_padding_mask = None
+        else:
+            prev_tokens, prev_padding_mask = inject_noise(
+                prev_output_tokens,
+                self.tgt_dict,
+                ratio=self.mask_ratio,
+                uniform=self.mask_uniform,
+            )
 
-        prev_states = self.decoder_embed_scale * \
-            self.decoder_embed_tokens(prev_tokens)
-        prev_states += self.decoder_embed_positions(prev_tokens)
-        prev_states = prev_states.transpose(0, 1)
+            prev_states = self.decoder_embed_scale * \
+                self.decoder_embed_tokens(prev_tokens)
+            prev_states += self.decoder_embed_positions(prev_tokens)
+            prev_states = prev_states.transpose(0, 1)
 
         # forward non-causal layers
         for layer in self.non_causal_layers:
@@ -424,6 +457,18 @@ class ASNAugmentedEncoder(FairseqEncoder):
         different from our reorder.
         """
         return self.causal_encoder.reorder_encoder_out(encoder_out, new_order)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        1. ignores missing non_causal_layers (loading from causal_st)
+        """
+        ignores = re.compile("^non_causal_layers.")
+        cur_state_dict = self.state_dict()
+        new_state_dict = state_dict
+        for k, v in cur_state_dict.items():
+            if ignores.search(k) is not None:
+                new_state_dict[k] = v
+        return super().load_state_dict(new_state_dict, strict=strict)
 
 
 @register_model_architecture(

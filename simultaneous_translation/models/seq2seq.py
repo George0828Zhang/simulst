@@ -7,8 +7,6 @@
 import math
 import logging
 from typing import Dict, Optional
-from collections import OrderedDict
-import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -149,11 +147,12 @@ class ST2TTransformerModel(S2TTransformerModel):
         logits, decoder_out = self.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        extra = {
+        if decoder_out is None:
+            decoder_out = {}
+        decoder_out.update({
             "encoder_out": encoder_out,
-            "decoder_out": decoder_out,
-        }
-        return logits, extra
+        })
+        return logits, decoder_out
 
     def upgrade_state_dict_named(self, state_dict, name):
         """ temp fix for layer index error when loading check"""
@@ -300,21 +299,6 @@ class CausalTransformerEncoder(TransformerEncoder):
         for index, layer in enumerate(self.layers):
             if index < end_id:
                 layer.prune_incremental_state(incremental_state, keep)
-
-    def load_state_dict(self, state_dict, strict=True):
-        """
-        1. remove ``causal_encoder'' from the state_dict keys.
-        2. ignores upsampler and decoder_embed.
-        """
-        changes = re.compile("causal_encoder.")
-        ignores = ["upsampler", "decoder_embed"]
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            if any([i in k for i in ignores]):
-                continue
-            new_state_dict[changes.sub("", k)] = v
-
-        return super().load_state_dict(new_state_dict, strict=strict)
 
 
 class SpeechTextCascadedEncoder(FairseqEncoder):

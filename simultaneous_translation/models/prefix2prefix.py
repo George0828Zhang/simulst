@@ -47,6 +47,12 @@ class WaitkST2TTransformerModel(ST2TTransformerModel):
             type=int,
             required=True,
             help='number of encoder states per read action.')
+        parser.add_argument(
+            "--load-pretrained-decoder-from",
+            type=str,
+            metavar="STR",
+            help="model to take decoder weights from (for initialization)",
+        )
 
     @classmethod
     def build_decoder(cls, args, task, embed_tokens):
@@ -57,6 +63,10 @@ class WaitkST2TTransformerModel(ST2TTransformerModel):
         if getattr(args, "load_pretrained_decoder_from", None):
             decoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=decoder, checkpoint=args.load_pretrained_decoder_from
+            )
+            logger.info(
+                f"loaded pretrained decoder from: "
+                f"{args.load_pretrained_decoder_from}"
             )
         return decoder
 
