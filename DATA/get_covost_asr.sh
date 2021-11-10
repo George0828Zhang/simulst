@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 DATA_ROOT=/livingrooms/george/covost2
 SRC=en
-LANGS="zh-CN"
 VOCAB=src_dict.txt
 CONF=config_asr.yaml
 
@@ -11,7 +10,36 @@ export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 source ~/envs/apex/bin/activate
 
 DATA_DIR=${DATA_ROOT}/${SRC}
-# mkdir -p ${DATA_DIR}
+
+# Extract
+feats=${DATA_DIR}/fbank80.zip
+if [ -f ${feats} ]; then
+  echo "${feats} already exists. It is likely that you set the wrong language which is already processed."
+  echo "Please change data root or clear ${feats} before continuing."
+  echo "Alternatively uncomment the command below to re-process manifest only."
+  # python prep_common_voice_data.py \
+  #   --data-root ${DATA_ROOT} \
+  #   --src-lang $SRC --manifest-only
+else
+  echo "processing ${DATA_DIR}"
+  python prep_common_voice_data.py \
+    --data-root ${DATA_ROOT} \
+    --src-lang $SRC
+fi
+
+exit
+
+# extracting phonemes
+mkdir -p g2p_logdir
+for split in "dev" "test" "train"; do
+  echo "extract phones from ${OUTDIR}/${split}_st_${SRC}_${TGT}.tsv"
+  # wc -l ${OUTDIR}/${split}_st_${SRC}_${TGT}.tsv  
+  python ./g2p_encode.py \
+    --parallel-process-num ${WORKERS} --logdir g2p_logdir \
+    --lower-case --do-filter --use-word-start --no-punc \
+    --data-path ${OUTDIR}/${split}_st_${SRC}_${TGT}.tsv \
+    --out-path ${OUTDIR}/${split}_st_pho_${TGT}.tsv
+done
 
 # TRANSCRIPTION
 BPE_TRAIN=${DATA_DIR}/transcriptions
