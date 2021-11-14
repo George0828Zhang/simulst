@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-TASK=ws_st
+DELAY=$1
+TASK=fixed_wait${DELAY}
 . ./data_path.sh
 CHECKPOINT=checkpoints/ctc_asr/avg_best_5_checkpoint.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${CHECKPOINT} \
-    --config-yaml config_st.yaml \
-    --train-subset train_pho_st \
-    --valid-subset dev_pho_st \
-    --skip-invalid-size-inputs-valid-test \
+    --config-yaml config_st_${SRC}_${TGT}.yaml \
+    --train-subset distill_st_pho_${TGT} \
+    --valid-subset dev_st_pho_${TGT} \
     --max-tokens 40000 \
-    --max-tokens-valid 10000 \
     --update-freq 2 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
-    --arch ws_transformer_s --do-weighted-shrink \
+    --arch st2t_transformer_waitk_s --fixed-shrink-ratio 3 --waitk-list ${DELAY} --waitk-stride 3 \
     --criterion label_smoothed_mtl --label-smoothing 0.1 --asr-factor 0.5 --report-accuracy \
     --clip-norm 1.0 \
     --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
@@ -23,7 +22,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \
-    --wandb-project simulst \
+    --wandb-project simulst-covost \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --save-interval-updates 500 \
     --keep-interval-updates 1 \

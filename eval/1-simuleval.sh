@@ -53,15 +53,16 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 AGENT=${AGENT:-"./agents/waitk_fixed_predecision_agent.py"}
 EXP=${EXP:-"../exp"}
 SRC_FILE=${SRC_FILE:-"./data/dev.wav_list"}
-TGT_FILE=${TGT_FILE:-"./data/dev.de"}
+TGT_FILE=${TGT_FILE:-"./data/dev.${TGT}"}
 CMVN=${CMVN:-"./data/gcmvn.npz"}
 
 source ${EXP}/data_path.sh
 
 CHECKPOINT=${EXP}/checkpoints/${MODEL}/checkpoint_best.pt
-SPM_PREFIX=${DATA}/spm_unigram8000_st
+# SPM_PREFIX=${DATA}/spm_unigram8000_st
+SPM_PREFIX=${DATA}/spm_char_st_${SRC}_${TGT}
 
-PORT=12345
+PORT=19428
 WORKERS=2
 BLEU_TOK=13a
 UNIT=word
@@ -69,28 +70,29 @@ DATANAME=$(basename $(dirname ${DATA}))
 OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.test_${WAITK}
 mkdir -p ${OUTPUT}
 
-if [[ ${TGT} == "zh" ]]; then
+if [[ ${TGT} == "zh" ]] || [[ ${TGT} == "zh-CN" ]]; then
     BLEU_TOK=zh
     UNIT=char
     NO_SPACE="--no-space"
 fi
 
+CHUNK=$(($WAITK*3))
 simuleval \
     --agent ${AGENT} \
     --user-dir ${USERDIR} \
     --source ${SRC_FILE} \
     --target ${TGT_FILE} \
     --data-bin ${DATA} \
-    --config config_st.yaml \
+    --config config_st_${SRC}_${TGT}.yaml \
     --global-stats ${CMVN} \
     --model-path ${CHECKPOINT} \
     --tgt-splitter-path ${SPM_PREFIX}.model \
     --output ${OUTPUT} \
-    --chunked-read 9 \
+    --chunked-read ${CHUNK} \
     --overlap 1 \
     --incremental-encoder \
     --sacrebleu-tokenizer ${BLEU_TOK} \
-    --eval-latency-unit ${UNIT} \
+    --eval-latency-unit word \
     --segment-type ${UNIT} \
     ${NO_SPACE} \
     --scores \
@@ -98,4 +100,5 @@ simuleval \
     --port ${PORT} \
     --workers ${WORKERS} \
     ${POSITIONAL[@]}
+    # --eval-latency-unit ${UNIT} \
     # --full-sentence \

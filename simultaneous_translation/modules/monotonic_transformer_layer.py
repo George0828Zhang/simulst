@@ -16,9 +16,12 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
     1. future masking
     2. incremental states for incremental encoding in inference
     """
-    def __init__(self, args):
+
+    def __init__(self, args, delay=1):
         super().__init__(args)
         self._future_mask = torch.empty(0)
+        self.delay = delay
+        assert self.delay > 0, "Cannot be faster than delay=1."
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
@@ -30,7 +33,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
         ):
             neg_inf = -torch.finfo(tensor.dtype).max
             self._future_mask = torch.triu(
-                torch.full([dim, dim], neg_inf), 1
+                torch.full([dim, dim], neg_inf), self.delay
             )
         self._future_mask = self._future_mask.type_as(tensor)
         return self._future_mask[:dim, :dim]

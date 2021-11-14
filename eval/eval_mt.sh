@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=offline_mt
+TASK=mt
 SPLIT=valid
 EXP=../exp
 . ${EXP}/data_path.sh
@@ -8,9 +8,8 @@ DATABIN=${DATA}/mt/data-bin
 AVG=true
 RESULT=./mt.results
 
-EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
-GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 \
---remove-bpe sentencepiece --tokenizer moses -s ${SRC} -t ${TGT} --moses-no-escape"
+EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer zh --sacrebleu-char-level"
+GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 --remove-bpe sentencepiece"
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -24,6 +23,7 @@ else
 fi
 
 python -m fairseq_cli.generate ${DATABIN} \
+  -s ${SRC} -t ${TGT} \
   --user-dir ${USERDIR} \
   --gen-subset ${SPLIT} \
   --task translation \

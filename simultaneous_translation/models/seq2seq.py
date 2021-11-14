@@ -38,6 +38,12 @@ from simultaneous_translation.modules.monotonic_transformer_layer import (
 logger = logging.getLogger(__name__)
 
 
+def nan_warn(t: Tensor, name: str):
+    # assert not shrinked_states.isnan().any()
+    if t.isnan().any():
+        logger.warning(f"NaN detected in tensor named: {name}")
+
+
 @register_model("st2t_transformer")
 class ST2TTransformerModel(S2TTransformerModel):
     """
@@ -49,6 +55,11 @@ class ST2TTransformerModel(S2TTransformerModel):
         """
         super(ST2TTransformerModel,
               ST2TTransformerModel).add_args(parser)
+        parser.add_argument(
+            "--lookahead",
+            type=int,
+            help="number of hidden states speech encoder lags behind speech features for.",
+        )
         parser.add_argument(
             "--do-weighted-shrink",
             action="store_true",
@@ -437,7 +448,8 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         shrink_lengths = (~new_speech_padding_mask).sum(-1)
 
         assert shrinked_states.size(1) == B
-        assert not shrinked_states.isnan().any()
+        # assert not shrinked_states.isnan().any()
+        nan_warn(shrinked_states, "fixed_shrink")
 
         return shrinked_states, shrink_lengths
 
@@ -489,7 +501,8 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         ).transpose(0, 1)
 
         assert shrinked_states.size(1) == B
-        assert not shrinked_states.isnan().any()
+        # assert not shrinked_states.isnan().any()
+        nan_warn(shrinked_states, "ws_shrink")
         if speech_padding_mask is not None:
             # pad states are shrunk to a segment
             # remove this 'pad segment'
@@ -508,7 +521,8 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     "st2t_transformer", "st2t_transformer_s"
 )
 def st2t_transformer_s(args):
-    args.encoder_layers = getattr(args, "encoder_layers", 12)
+    args.lookahead = getattr(args, "lookahead", 1)
+    args.encoder_layers = getattr(args, "encoder_layers", 6)
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)

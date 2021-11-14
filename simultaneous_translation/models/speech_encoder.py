@@ -56,6 +56,11 @@ class SpeechEncoderModel(FairseqEncoderModel):
         """Add model-specific arguments to the parser."""
         super(SpeechEncoderModel, SpeechEncoderModel).add_args(parser)
         parser.add_argument(
+            "--lookahead",
+            type=int,
+            help="number of hidden states speech encoder lags behind speech features for.",
+        )
+        parser.add_argument(
             "--load-pretrained-encoder-from",
             type=str,
             metavar="STR",
@@ -154,7 +159,7 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
     def __init__(self, args, src_dict, ctc_projection):
         super().__init__(args)
         self.transformer_layers = nn.ModuleList([
-            CausalTransformerEncoderLayer(args) for i in range(args.encoder_layers)
+            CausalTransformerEncoderLayer(args, args.lookahead) for i in range(args.encoder_layers)
         ])
         self.src_dict = src_dict
         self.ctc_projection = ctc_projection
@@ -274,4 +279,6 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
     "speech_encoder", "speech_encoder_s"
 )
 def speech_encoder_s(args):
+    args.lookahead = getattr(args, "lookahead", 1)
+    args.encoder_layers = getattr(args, "encoder_layers", 6)  # speech 6, text 6
     s2t_transformer_s(args)

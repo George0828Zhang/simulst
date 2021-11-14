@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 TASK=ctc_asr
 . ./data_path.sh
-DATA=${DATA_ROOT}/joint
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --config-yaml config_asr.yaml \
-    --train-subset train_de_asr,train_es_asr,train_fr_asr,train_it_asr,train_nl_asr,train_pt_asr,train_ro_asr,train_ru_asr \
-    --valid-subset dev_de_asr,dev_es_asr \
-    --skip-invalid-size-inputs-valid-test \
+    --train-subset train_st_pho_${TGT} \
+    --valid-subset dev_st_pho_${TGT} \
     --max-tokens 80000 \
     --update-freq 4 \
     --task speech_to_text_infer --do-asr \
@@ -15,12 +13,13 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --arch speech_encoder_s \
     --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
     --clip-norm 10.0 \
+    --weight-decay 1e-4 \
     --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \
-    --wandb-project simulst \
+    --wandb-project simulst-covost \
     --best-checkpoint-metric wer \
     --save-interval-updates 500 \
     --keep-interval-updates 1 \

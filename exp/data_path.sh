@@ -1,7 +1,7 @@
 export SRC=en
-export TGT=de
-export DATA_ROOT=/livingrooms/george/mustc
-export DATA=${DATA_ROOT}/${SRC}-${TGT}
+export TGT=zh-CN
+export DATA_ROOT=/livingrooms/george/covost2
+export DATA=${DATA_ROOT}/${SRC}
 
 FAIRSEQ=`realpath ~/utility/fairseq`
 USERDIR=`realpath ../simultaneous_translation`
