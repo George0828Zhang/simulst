@@ -26,11 +26,13 @@ from fairseq.models import (
     register_model_architecture,
 )
 # from fairseq.modules import LayerNorm
-from fairseq.modules.transformer_sentence_encoder import init_bert_params
-from fairseq.models.speech_to_text.s2t_transformer import (
-    # S2TTransformerModel,
-    S2TTransformerEncoder,
-    s2t_transformer_s,
+# from fairseq.models.speech_to_text.s2t_transformer import (
+#     S2TTransformerEncoder,
+#     s2t_transformer_s,
+# )
+from fairseq.models.speech_to_text.convtransformer import (
+    ConvTransformerEncoder,
+    base_architecture as convtransformer_base_architecture,
 )
 
 # user
@@ -61,6 +63,11 @@ class SpeechEncoderModel(FairseqEncoderModel):
             help="number of hidden states speech encoder lags behind speech features for.",
         )
         parser.add_argument(
+            "--weight-norm-conv",
+            action="store_true",
+            help="apply weight normalization for convolution weights.",
+        )
+        parser.add_argument(
             "--load-pretrained-encoder-from",
             type=str,
             metavar="STR",
@@ -71,7 +78,6 @@ class SpeechEncoderModel(FairseqEncoderModel):
     def build_encoder(cls, args, src_dict, ctc_projection):
         encoder = CausalSpeechEncoder(
             args, src_dict, ctc_projection)
-        encoder.apply(init_bert_params)
         if getattr(args, "load_pretrained_encoder_from", None):
             encoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=encoder, checkpoint=args.load_pretrained_encoder_from
@@ -90,6 +96,9 @@ class SpeechEncoderModel(FairseqEncoderModel):
             args.encoder_embed_dim,
             len(src_dict),
             bias=False
+        )
+        nn.init.normal_(
+            ctc_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
         )
         encoder = cls.build_encoder(
             args, src_dict, ctc_projection)
@@ -153,7 +162,7 @@ class SpeechEncoderModel(FairseqEncoderModel):
         return self.encoder.max_positions()
 
 
-class CausalSpeechEncoder(S2TTransformerEncoder):
+class CausalSpeechEncoder(ConvTransformerEncoder):
     """Transformer encoder that consists of causal attention.
     """
     def __init__(self, args, src_dict, ctc_projection):
@@ -163,6 +172,49 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
         ])
         self.src_dict = src_dict
         self.ctc_projection = ctc_projection
+        if args.weight_norm_conv:
+            for i, m in enumerate(self.conv):
+                if isinstance(m, nn.Conv2d):
+                    self.conv[i] = nn.utils.weight_norm(m)
+
+    def dropout_module(self, x):
+        return F.dropout(x, p=self.dropout, training=self.training)
+
+    def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
+        """
+        Used for agent.
+        """
+        def conv_forw(m, H):
+            return (
+                (H + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1
+            ).floor()
+
+        out = in_seq_lens_tensor.clone()
+        for m in self.conv:
+            if isinstance(m, nn.Conv2d):
+                out = conv_forw(m, out.float())
+        return out.long()
+
+    def subsample(self, src_tokens, src_lengths):
+        bsz, max_seq_len, _ = src_tokens.size()
+        x = (
+            src_tokens.view(bsz, max_seq_len, self.in_channels, self.input_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )
+        x = self.conv(x)
+        bsz, _, output_seq_len, _ = x.size()
+        x = x.transpose(1, 2).transpose(0, 1).contiguous().view(output_seq_len, bsz, -1)
+        x = self.out(x)
+
+        subsampling_factor = int(max_seq_len * 1.0 / output_seq_len + 0.5)
+        input_len_0 = (src_lengths.float() / subsampling_factor).ceil().long()
+        input_len_1 = x.size(0) * torch.ones([src_lengths.size(0)]).long().to(
+            input_len_0.device
+        )
+        input_lengths = torch.min(input_len_0, input_len_1)
+
+        return x, input_lengths
 
     def forward(
         self,
@@ -279,6 +331,13 @@ class CausalSpeechEncoder(S2TTransformerEncoder):
     "speech_encoder", "speech_encoder_s"
 )
 def speech_encoder_s(args):
+    args.encoder_normalize_before = False
+    args.decoder_normalize_before = False
+
     args.lookahead = getattr(args, "lookahead", 1)
     args.encoder_layers = getattr(args, "encoder_layers", 6)  # speech 6, text 6
-    s2t_transformer_s(args)
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
+    # s2t_transformer_s(args)
+    convtransformer_base_architecture(args)

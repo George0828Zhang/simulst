@@ -23,10 +23,13 @@ from fairseq.models import (
     register_model_architecture,
 )
 from fairseq.modules.fairseq_dropout import FairseqDropout
-from fairseq.modules.transformer_sentence_encoder import init_bert_params
-from fairseq.models.speech_to_text.s2t_transformer import (
-    S2TTransformerModel,
-    s2t_transformer_s,
+# from fairseq.models.speech_to_text.s2t_transformer import (
+#     S2TTransformerModel,
+#     s2t_transformer_s,
+# )
+from fairseq.models.speech_to_text.convtransformer import (
+    ConvTransformerModel,
+    base_architecture as convtransformer_base_architecture,
 )
 
 # user
@@ -45,7 +48,7 @@ def nan_warn(t: Tensor, name: str):
 
 
 @register_model("st2t_transformer")
-class ST2TTransformerModel(S2TTransformerModel):
+class ST2TTransformerModel(ConvTransformerModel):
     """
     causal encoder (+ semantic encoder) + normal decoder
     """
@@ -59,6 +62,11 @@ class ST2TTransformerModel(S2TTransformerModel):
             "--lookahead",
             type=int,
             help="number of hidden states speech encoder lags behind speech features for.",
+        )
+        parser.add_argument(
+            "--weight-norm-conv",
+            action="store_true",
+            help="apply weight normalization for convolution weights.",
         )
         parser.add_argument(
             "--do-weighted-shrink",
@@ -88,7 +96,6 @@ class ST2TTransformerModel(S2TTransformerModel):
     def build_encoder(cls, args, task, embed_tokens, ctc_projection):
         sp_encoder = CausalSpeechEncoder(
             args, task.source_dictionary, ctc_projection)
-        sp_encoder.apply(init_bert_params)
         if getattr(args, "load_pretrained_encoder_from", None):
             sp_encoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=sp_encoder, checkpoint=args.load_pretrained_encoder_from
@@ -101,7 +108,6 @@ class ST2TTransformerModel(S2TTransformerModel):
         if args.text_encoder_layers > 0:
             tx_encoder = CausalTransformerEncoder(
                 args, task.source_dictionary, embed_tokens)
-            tx_encoder.apply(init_bert_params)
             if getattr(args, "load_pretrained_text_encoder_from", None):
                 tx_encoder = checkpoint_utils.load_pretrained_component_from_model(
                     component=tx_encoder, checkpoint=args.load_pretrained_text_encoder_from
@@ -521,6 +527,9 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     "st2t_transformer", "st2t_transformer_s"
 )
 def st2t_transformer_s(args):
+    args.encoder_normalize_before = False
+    args.decoder_normalize_before = False
+
     args.lookahead = getattr(args, "lookahead", 1)
     args.encoder_layers = getattr(args, "encoder_layers", 6)
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
@@ -531,4 +540,8 @@ def st2t_transformer_s(args):
     else:
         getattr(args, "fixed_shrink_ratio", 1)
     args.share_decoder_input_output_embed = True
-    s2t_transformer_s(args)
+
+    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
+    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
+    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
+    convtransformer_base_architecture(args)
