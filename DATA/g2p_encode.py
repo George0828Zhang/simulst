@@ -10,7 +10,7 @@ import re
 import time
 
 from g2p_en import G2p
-from data_utils import (
+from examples.speech_to_text.data_utils import (
     load_df_from_tsv,
     save_df_to_tsv
 )

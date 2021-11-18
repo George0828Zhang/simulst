@@ -7,10 +7,11 @@
 import argparse
 import logging
 from pathlib import Path
-from prep_mustc_data import (
-    MUSTC
+from prep_covost_data import (
+    CoVoST
 )
-from data_utils import (
+# from data_utils import (
+from examples.speech_to_text.data_utils import (
     extract_fbank_features,
     cal_gcmvn_stats
 )
@@ -22,16 +23,11 @@ log = logging.getLogger(__name__)
 
 
 def main(args):
-    root = Path(args.data_root).absolute()
-    lang = args.lang
-    split = args.split
+    root = Path(args.data_root).absolute() / args.src_lang
+    if not root.is_dir():
+        raise NotADirectoryError(f"{root} does not exist")
 
-    cur_root = root / f"en-{lang}"
-    assert cur_root.is_dir(), (
-        f"{cur_root.as_posix()} does not exist. Skipped."
-    )
-
-    dataset = MUSTC(root.as_posix(), lang, split)
+    dataset = CoVoST(root.as_posix(), args.split, args.src_lang, args.tgt_lang)
     output = Path(args.output).absolute()
     output.mkdir(exist_ok=True)
 
@@ -40,6 +36,8 @@ def main(args):
         if len(gcmvn_feature_list) < args.gcmvn_max_num:
             features = extract_fbank_features(waveform, sample_rate)
             gcmvn_feature_list.append(features)
+        else:
+            break
 
     stats = cal_gcmvn_stats(gcmvn_feature_list)
     with open(output / "gcmvn.npz", "wb") as f:
@@ -48,10 +46,15 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", "-d", required=True, type=str)
-    parser.add_argument("--lang", required=True, type=str)
+    parser.add_argument(
+        "--data-root", "-d", required=True, type=str,
+        help="data root with sub-folders for each language <root>/<src_lang>"
+    )
+    parser.add_argument("--src-lang", "-s", required=True, type=str)
+    parser.add_argument("--tgt-lang", "-t", type=str)
+
     parser.add_argument("--output", required=True, type=str)
-    parser.add_argument("--split", required=True, choices=MUSTC.SPLITS)
+    parser.add_argument("--split", required=True, choices=CoVoST.SPLITS)
     # parser.add_argument("--recompute-fbank", action="store_true",
     #                     help="Whether to recompute fbank, or use the features"
     #                          "available in data-root.")

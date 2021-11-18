@@ -36,34 +36,17 @@ else
         | awk '{ print $2 " " $1 }' > ${DATA_DIR}/${VOCAB}
     echo "done. Total: $(cat ${DATA_DIR}/${VOCAB} | wc -l).first few tokens:"
     head ${DATA_DIR}/${VOCAB}
-
-    # echo "copy asr dict for all datasets"
-    # for l in $LANGS; do
-    #     f=${DATA_DIR}/${VOCAB}
-    #     dest=${DATA_ROOT}/en-${l}/${VOCAB}
-    #     cp ${f} ${dest}
-    # done
 fi
 
-# # symlink
-# echo "create symbolic links to each languages."
-# for split in "dev" "test" "train"; do
-#     for l in $LANGS; do
-#         f=${DATA_ROOT}/en-${l}/${split}_pho_st.tsv
-#         dest=${DATA_DIR}/${split}_${l}_asr.tsv
-#         ln -s ${f} ${dest}
-#     done
-# done
-
 # copy config from first language
-pattern="${DATA_DIR}/config_st_*.yaml"
+pattern="${DATA_DIR}/config_st_${SRC}*.yaml"
 files=( $pattern )
 cp "${files[0]}" ${DATA_DIR}/${CONF}
 
 # update configs
-for l in $LANGS; do
+for f in ${files[@]}; do
     python ${UPDATE} \
-        --path ${DATA_DIR}/config_st_${SRC}_${l}.yaml \
+        --path ${f} \
         --rm-src-bpe-tokenizer \
         --src-vocab-filename ${VOCAB}
 done

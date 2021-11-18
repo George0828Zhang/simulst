@@ -4,9 +4,9 @@
 
 1. Install fairseq
 ```bash
-git clone https://github.com/pytorch/fairseq.git
+git clone https://github.com/George0828Zhang/fairseq.git
 cd fairseq
-git checkout 8b861be
+git checkout 8b526ad
 python setup.py build_ext --inplace
 pip install .
 ```
@@ -17,33 +17,30 @@ pip install -r requirements.txt
 ```
 
 ## Data Preparation
-This section introduces the data preparation for training and evaluation. Following will be based on MuST-C.
+This section introduces the data preparation for training and evaluation. 
 
-1. [Download](https://ict.fbk.eu/must-c/) and unpack the package.
-```bash
-cd ${DATA_ROOT}
-tar -zxvf MUSTC_v1.2_en-zh.tar.gz
-```
-2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the root path of speech data (the directory of previous step).
-3. Preprocess data with
+1. [Download](https://commonvoice.mozilla.org/en/datasets) and unpack Common Voice v4 to a path ${COVOST_ROOT}/${SOURCE_LANG_ID}.
+2. The following bash scripts contain a `DATA_ROOT` variable which should be set to the root path of speech data (the directory wich contains `clips/` and `validated.tsv`).
+3. Preprocess ST data with
 ```bash
 cd DATA
-bash get_mustc.sh ${lang}
+bash get_covost2.sh ${TGT}  # e.g. TGT=zh-CN
 ```
-The output manifest files should appear under `${DATA_ROOT}/en-${lang}/`.
-
-4. In `DATA/get_mustc_asr.sh`, set `DATA_ROOT` and `LANGS`. Then preprocess data for joint asr with 
+4. Preprocess ASR dict and data with 
 ```bash
-bash get_mustc_asr.sh
+bash get_covost2_asr.sh
 ```
-The output manifest files should appear under `${DATA_ROOT}/joint/`.
+5. Preprocess MT dict and data with 
+```bash
+bash get_mt.sh
+```
 
-5. Configure environment and path in `exp/data_path.sh` before training:
+6. Configure environment and path in `exp/data_path.sh` before training:
 ```bash
 export SRC=en
-export TGT=de
-export DATA_ROOT=/path/to/mustc/root
-export DATA=${DATA_ROOT}/${SRC}-${TGT}
+export TGT=zh-CN
+export DATA_ROOT=/path/to/covost2/root
+export DATA=${DATA_ROOT}/${SRC}
 
 FAIRSEQ=/path/to/fairseq
 USERDIR=`realpath ../simultaneous_translation`

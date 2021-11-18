@@ -2,11 +2,8 @@
 SRC=en
 TGT=${1:-zh-CN}
 DATA_ROOT=/livingrooms/george/covost2
-vocab=5000
+vocab=5000  # actually unused
 vtype=char
-# if [ "$TGT" == "zh" ]; then
-#   EXTRA="--jieba"
-# fi
 WORKERS=1
 
 FAIRSEQ=~/utility/fairseq
@@ -28,7 +25,8 @@ else
   echo "processing ${OUTDIR}"
   python prep_covost_data.py \
     --data-root ${DATA_ROOT} --vocab-type $vtype --vocab-size $vocab \
-    --src-lang $SRC --tgt-lang $TGT ${EXTRA}
+    --src-lang $SRC --tgt-lang $TGT ${EXTRA} \
+    --cmvn-type global --gcmvn-max-num 60000
 fi
 
 

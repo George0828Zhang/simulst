@@ -11,11 +11,11 @@ from pathlib import Path
 import shutil
 from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple
+import numpy as np
 
 import pandas as pd
 import torchaudio
-# from examples.speech_to_text.data_utils import (
-from data_utils import (
+from examples.speech_to_text.data_utils import (
     create_zip,
     extract_fbank_features,
     filter_manifest_df,
@@ -24,6 +24,7 @@ from data_utils import (
     get_zip_manifest,
     load_df_from_tsv,
     save_df_to_tsv,
+    cal_gcmvn_stats,
 )
 from torch import Tensor
 from torch.utils.data import Dataset
@@ -159,10 +160,14 @@ class CoVoST(Dataset):
         data = df.to_dict(orient="index").items()
         data = [v for k, v in sorted(data, key=lambda x: x[0])]
         self.data = []
-        for e in data:
+        to_rm = re.compile(r"\[?(TO\s)?REMOVE\]?")
+        for e in tqdm(data, desc="verify"):
             try:
                 path = self.root / "clips" / e["path"]
                 _ = torchaudio.info(path.as_posix())
+                e["translation"] = to_rm.sub("", e["translation"]).strip()
+                if len(e["translation"]) == 0:
+                    continue
                 self.data.append(e)
             except RuntimeError:
                 pass
@@ -204,10 +209,23 @@ def process(args):
             print(f"Fetching split {split}...")
             dataset = CoVoST(root, split, args.src_lang, args.tgt_lang)
             print("Extracting log mel filter bank features...")
-            for waveform, sample_rate, _, _, _, utt_id in tqdm(dataset):
-                extract_fbank_features(
+            gcmvn_feature_list = []
+            if split == 'train' and args.cmvn_type == "global":
+                print("And estimating cepstral mean and variance stats...")
+            for waveform, sample_rate, _, _, _, utt_id in tqdm(dataset, desc="fbank"):
+                features = extract_fbank_features(
                     waveform, sample_rate, feature_root / f"{utt_id}.npy"
                 )
+                if split == 'train' and args.cmvn_type == "global":
+                    if len(gcmvn_feature_list) < args.gcmvn_max_num:
+                        gcmvn_feature_list.append(features)
+
+            if split == 'train' and args.cmvn_type == "global":
+                # Estimate and save cmv
+                stats = cal_gcmvn_stats(gcmvn_feature_list)
+                with open(root / "gcmvn.npz", "wb") as f:
+                    np.savez(f, mean=stats["mean"], std=stats["std"])
+
     # Pack features into ZIP
     zip_path = root / "fbank80.zip"
     if not args.manifest_only:
@@ -224,10 +242,9 @@ def process(args):
     if args.tgt_lang is not None:
         task = f"st_{args.src_lang}_{args.tgt_lang}"
     for split in CoVoST.SPLITS:
-        is_train_split = split.startswith("train")
         manifest = {c: [] for c in MANIFEST_COLUMNS}
         dataset = CoVoST(root, split, args.src_lang, args.tgt_lang)
-        for _, _, src_utt, tgt_utt, speaker_id, utt_id in tqdm(dataset):
+        for _, _, src_utt, tgt_utt, speaker_id, utt_id in tqdm(dataset, desc="manifest"):
             manifest["id"].append(utt_id)
             manifest["audio"].append(audio_paths[utt_id])
             manifest["n_frames"].append(audio_lengths[utt_id])
@@ -242,14 +259,15 @@ def process(args):
                 tgt_utt = re.sub(r"\s\s+", " ", tgt_utt)
             manifest["tgt_text"].append(tgt_utt)
             manifest["speaker"].append(speaker_id)
+        is_train_split = split.startswith("train")
         if is_train_split:
             train_text.extend(manifest["tgt_text"])
         df = pd.DataFrame.from_dict(manifest)
         df = filter_manifest_df(df, is_train_split=is_train_split)
         save_df_to_tsv(df, root / f"{split}_{task}.tsv")
     # Generate vocab
-    v_size_str = "" if args.vocab_type == "char" else str(args.vocab_size)
-    spm_filename_prefix = f"spm_{args.vocab_type}{v_size_str}_{task}"
+    vocab_size_str = "" if args.vocab_type == "char" else str(args.vocab_size)
+    spm_filename_prefix = f"spm_{args.vocab_type}{vocab_size_str}_{task}"
     with NamedTemporaryFile(mode="w") as f:
         for t in train_text:
             f.write(t + "\n")
@@ -257,7 +275,7 @@ def process(args):
             Path(f.name),
             root / spm_filename_prefix,
             args.vocab_type,
-            args.vocab_size,
+            args.vocab_size
         )
     # Generate config YAML
     gen_config_yaml(
@@ -265,6 +283,11 @@ def process(args):
         spm_filename=spm_filename_prefix + ".model",
         yaml_filename=f"config_{task}.yaml",
         specaugment_policy="lb",
+        cmvn_type=args.cmvn_type,
+        gcmvn_path=(
+            root / "gcmvn.npz" if args.cmvn_type == "global"
+            else None
+        ),
     )
     # Clean up
     if not args.manifest_only:
@@ -291,6 +314,15 @@ def main():
                         "works only when zip is already present"
                         )
     parser.add_argument("--jieba", action="store_true", help="use jieba for chinese.")
+    parser.add_argument(
+        "--cmvn-type", default="utterance",
+        choices=["global", "utterance"],
+        help="The type of cepstral mean and variance normalization"
+    )
+    parser.add_argument(
+        "--gcmvn-max-num", default=25000, type=int,
+        help="Maximum number of sentences to use to estimate global mean and variance"
+    )
     args = parser.parse_args()
     print(args)
     process(args)

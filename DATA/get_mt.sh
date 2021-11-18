@@ -32,7 +32,7 @@ for split in train dev test; do
         cut -f4 ${REV_DATA}/${split}_st_${TGT}_${SRC}.tsv | tail +2 >> ${prep}/${split}.${TGT}.raw
         echo "found and added reversed data (${TGT}->${SRC})."
     fi
-    for lang in ${SRC} ${TGT}; do        
+    for lang in ${SRC} ${TGT}; do
         f=${prep}/${split}.${lang}.raw
         tok=${prep}/${split}.${lang}
 	
@@ -43,8 +43,8 @@ for split in train dev test; do
             if [ ${lang} = "zh-CN" ]; then
                 cat ${f} | \
                 python $NORMALIZER zh | \
-                python -m jieba_fast -q -d ' ' | \
                     sed -e 's/ \{2,\}/ /g' > ${tok}
+                # python -m jieba_fast -q -d ' ' | \
             else
                 cat ${f} | python $NORMALIZER ${lang} > ${tok}
             fi
@@ -63,15 +63,14 @@ for lang in ${SRC} ${TGT}; do
         BPE_TRAIN=${prep}/train.${lang}
         echo "spm_train on ${BPE_TRAIN}..."
         ccvg=1.0
-        if [ ${lang} = "zh-CN" ]; then
-            ccvg=0.9995
-        fi
+        # if [ ${lang} = "zh-CN" ]; then
+        #     ccvg=0.9995
+        # fi
         python ${SPM_TRAIN} --input=$BPE_TRAIN \
             --model_prefix=$SPM_PREFIX \
             --vocab_size=$vocab \
             --character_coverage=${ccvg} \
-            --model_type=$vtype \
-            --normalization_rule_name=nmt_nfkc
+            --model_type=$vtype
         cut -f1 ${SPM_PREFIX}.vocab | tail -n +4 | sed "s/$/ 100/g" > ${DICT}
         cp ${SPM_MODEL} ${bin}
         cp ${DICT} ${bin}
