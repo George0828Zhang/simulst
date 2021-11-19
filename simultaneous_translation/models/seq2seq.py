@@ -23,17 +23,22 @@ from fairseq.models import (
     register_model_architecture,
 )
 from fairseq.modules.fairseq_dropout import FairseqDropout
-# from fairseq.models.speech_to_text.s2t_transformer import (
-#     S2TTransformerModel,
-#     s2t_transformer_s,
-# )
+from fairseq.models.speech_to_text.s2t_transformer import (
+    S2TTransformerModel,
+    s2t_transformer_s,
+)
 from fairseq.models.speech_to_text.convtransformer import (
     ConvTransformerModel,
     base_architecture as convtransformer_base_architecture,
 )
 
 # user
-from simultaneous_translation.models.speech_encoder import CausalSpeechEncoder
+from simultaneous_translation.models.speech_encoder import (
+    S2TCausalSpeechEncoder,
+    ConvCausalSpeechEncoder,
+    s2t_speech_encoder_s,
+    conv_speech_encoder_s
+)
 from simultaneous_translation.modules.monotonic_transformer_layer import (
     CausalTransformerEncoderLayer,
 )
@@ -47,133 +52,151 @@ def nan_warn(t: Tensor, name: str):
         logger.warning(f"NaN detected in tensor named: {name}")
 
 
-@register_model("st2t_transformer")
-class ST2TTransformerModel(ConvTransformerModel):
-    """
-    causal encoder (+ semantic encoder) + normal decoder
-    """
-    @staticmethod
-    def add_args(parser):
-        """Add model-specific arguments to the parser.
+def create_seq2seq_model(klass):
+    class STSeq2SeqModel(klass):
         """
-        super(ST2TTransformerModel,
-              ST2TTransformerModel).add_args(parser)
-        parser.add_argument(
-            "--lookahead",
-            type=int,
-            help="number of hidden states speech encoder lags behind speech features for.",
-        )
-        parser.add_argument(
-            "--weight-norm-conv",
-            action="store_true",
-            help="apply weight normalization for convolution weights.",
-        )
-        parser.add_argument(
-            "--do-weighted-shrink",
-            action="store_true",
-            default=False,
-            help="shrink the encoder states based on ctc output.",
-        )
-        parser.add_argument(
-            "--fixed-shrink-ratio",
-            type=int,
-            default=1,
-            help="shrink speech encoder output as fixed-length segments.",
-        )
-        parser.add_argument(
-            "--text-encoder-layers",
-            type=int,
-            help="number of  layers for text (semantic) encoder, after speech encoder.",
-        )
-        parser.add_argument(
-            "--load-pretrained-text-encoder-from",
-            type=str,
-            metavar="STR",
-            help="model to take text encoder weights from (for initialization)",
-        )
+        causal encoder (+ semantic encoder) + normal decoder
+        """
+        @staticmethod
+        def add_args(parser):
+            """Add model-specific arguments to the parser.
+            """
+            super(STSeq2SeqModel,
+                STSeq2SeqModel).add_args(parser)
+            parser.add_argument(
+                "--lookahead",
+                type=int,
+                help="number of hidden states speech encoder lags behind speech features for.",
+            )
+            parser.add_argument(
+                "--do-weighted-shrink",
+                action="store_true",
+                default=False,
+                help="shrink the encoder states based on ctc output.",
+            )
+            parser.add_argument(
+                "--fixed-shrink-ratio",
+                type=int,
+                default=1,
+                help="shrink speech encoder output as fixed-length segments.",
+            )
+            parser.add_argument(
+                "--text-encoder-layers",
+                type=int,
+                help="number of  layers for text (semantic) encoder, after speech encoder.",
+            )
+            parser.add_argument(
+                "--load-pretrained-text-encoder-from",
+                type=str,
+                metavar="STR",
+                help="model to take text encoder weights from (for initialization)",
+            )
+            parser.add_argument(
+                "--load-pretrained-decoder-from",
+                type=str,
+                metavar="STR",
+                help="model to take decoder weights from (for initialization)",
+            )
 
-    @classmethod
-    def build_encoder(cls, args, task, embed_tokens, ctc_projection):
-        sp_encoder = CausalSpeechEncoder(
-            args, task.source_dictionary, ctc_projection)
-        if getattr(args, "load_pretrained_encoder_from", None):
-            sp_encoder = checkpoint_utils.load_pretrained_component_from_model(
-                component=sp_encoder, checkpoint=args.load_pretrained_encoder_from
-            )
-            logger.info(
-                f"loaded pretrained speech encoder from: "
-                f"{args.load_pretrained_encoder_from}"
-            )
-        tx_encoder = None
-        if args.text_encoder_layers > 0:
-            tx_encoder = CausalTransformerEncoder(
-                args, task.source_dictionary, embed_tokens)
-            if getattr(args, "load_pretrained_text_encoder_from", None):
-                tx_encoder = checkpoint_utils.load_pretrained_component_from_model(
-                    component=tx_encoder, checkpoint=args.load_pretrained_text_encoder_from
+        @classmethod
+        def build_encoder(cls, args, task, embed_tokens, ctc_projection):
+            sp_encoder = CausalSpeechEncoder(
+                args, task.source_dictionary, ctc_projection)
+            if getattr(args, "load_pretrained_encoder_from", None):
+                sp_encoder = checkpoint_utils.load_pretrained_component_from_model(
+                    component=sp_encoder, checkpoint=args.load_pretrained_encoder_from
                 )
                 logger.info(
-                    f"loaded pretrained text encoder from: "
-                    f"{args.load_pretrained_text_encoder_from}"
+                    f"loaded pretrained speech encoder from: "
+                    f"{args.load_pretrained_encoder_from}"
                 )
-        return SpeechTextCascadedEncoder(args, sp_encoder, tx_encoder)
+            tx_encoder = None
+            if args.text_encoder_layers > 0:
+                tx_encoder = CausalTransformerEncoder(
+                    args, task.source_dictionary, embed_tokens)
+                if getattr(args, "load_pretrained_text_encoder_from", None):
+                    tx_encoder = checkpoint_utils.load_pretrained_component_from_model(
+                        component=tx_encoder, checkpoint=args.load_pretrained_text_encoder_from
+                    )
+                    logger.info(
+                        f"loaded pretrained text encoder from: "
+                        f"{args.load_pretrained_text_encoder_from}"
+                    )
+            return SpeechTextCascadedEncoder(args, sp_encoder, tx_encoder)
+        
+        @classmethod
+        def build_decoder(cls, args, task, embed_tokens):
+            decoder = super().build_decoder(args, task, embed_tokens)
 
-    @classmethod
-    def build_model(cls, args, task):
-        """Build a new model instance."""
+            if getattr(args, "load_pretrained_decoder_from", None):
+                decoder = checkpoint_utils.load_pretrained_component_from_model(
+                    component=decoder, checkpoint=args.load_pretrained_decoder_from
+                )
+                logger.info(
+                    f"loaded pretrained decoder from: "
+                    f"{args.load_pretrained_decoder_from}"
+                )
+            return decoder
 
-        st2t_transformer_s(args)
+        @classmethod
+        def build_model(cls, args, task):
+            """Build a new model instance."""
 
-        def build_embedding(dictionary, embed_dim):
-            num_embeddings = len(dictionary)
-            padding_idx = dictionary.pad()
-            return Embedding(num_embeddings, embed_dim, padding_idx)
+            st2t_transformer_s(args)
 
-        encoder_embed_tokens = build_embedding(
-            task.source_dictionary, args.encoder_embed_dim
-        )
-        decoder_embed_tokens = build_embedding(
-            task.target_dictionary, args.decoder_embed_dim
-        )
-        ctc_projection = nn.Linear(
-            encoder_embed_tokens.weight.shape[1],
-            encoder_embed_tokens.weight.shape[0],
-            bias=False,
-        )
-        nn.init.normal_(
-            ctc_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
-        )
-        encoder = cls.build_encoder(args, task, encoder_embed_tokens, ctc_projection)
-        decoder = cls.build_decoder(args, task, decoder_embed_tokens)
-        return cls(encoder, decoder)
+            def build_embedding(dictionary, embed_dim):
+                num_embeddings = len(dictionary)
+                padding_idx = dictionary.pad()
+                return Embedding(num_embeddings, embed_dim, padding_idx)
 
-    def forward(
-        self,
-        src_tokens,
-        src_lengths,
-        prev_output_tokens,
-        src_txt_tokens=None,  # unused
-        src_txt_lengths=None,  # unused
-    ):
-        """
-        """
-        encoder_out = self.encoder(
-            src_tokens=src_tokens,
-            src_lengths=src_lengths
-        )
-        logits, decoder_out = self.decoder(
-            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
-        )
-        if decoder_out is None:
-            decoder_out = {}
-        decoder_out.update({
-            "encoder_out": encoder_out,
-        })
-        return logits, decoder_out
+            encoder_embed_tokens = build_embedding(
+                task.source_dictionary, args.encoder_embed_dim
+            )
+            decoder_embed_tokens = build_embedding(
+                task.target_dictionary, args.decoder_embed_dim
+            )
+            ctc_projection = nn.Linear(
+                encoder_embed_tokens.weight.shape[1],
+                encoder_embed_tokens.weight.shape[0],
+                bias=False,
+            )
+            nn.init.normal_(
+                ctc_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
+            )
+            encoder = cls.build_encoder(args, task, encoder_embed_tokens, ctc_projection)
+            decoder = cls.build_decoder(args, task, decoder_embed_tokens)
+            return cls(encoder, decoder)
 
-    def upgrade_state_dict_named(self, state_dict, name):
-        """ temp fix for layer index error when loading check"""
-        pass
+        def forward(
+            self,
+            src_tokens,
+            src_lengths,
+            prev_output_tokens,
+            src_txt_tokens=None,  # unused
+            src_txt_lengths=None,  # unused
+        ):
+            """
+            """
+            encoder_out = self.encoder(
+                src_tokens=src_tokens,
+                src_lengths=src_lengths
+            )
+            logits, decoder_out = self.decoder(
+                prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+            )
+            if decoder_out is None:
+                decoder_out = {}
+            decoder_out.update({
+                "encoder_out": encoder_out,
+            })
+            return logits, decoder_out
+
+        def upgrade_state_dict_named(self, state_dict, name):
+            """ temp fix for layer index error when loading check"""
+            pass
+
+    STSeq2SeqModel.__name__ = klass.__name__
+    return STSeq2SeqModel
 
 
 class CausalTransformerEncoder(TransformerEncoder):
@@ -211,6 +234,7 @@ class CausalTransformerEncoder(TransformerEncoder):
         else:
             raise RuntimeError(
                 f"invalid argument dimension src_tokens = {src_tokens.dim}.")
+        has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
 
         # x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
         # embed positions
@@ -267,6 +291,9 @@ class CausalTransformerEncoder(TransformerEncoder):
             x = self.layernorm_embedding(x)
 
         x = self.dropout_module(x)
+        # account for padding while computing the representation
+        if has_pads:
+            x = x * (1 - encoder_padding_mask.unsqueeze(-1).type_as(x))
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -280,7 +307,7 @@ class CausalTransformerEncoder(TransformerEncoder):
         for layer in self.layers:
             x = layer(
                 x,
-                encoder_padding_mask=encoder_padding_mask if encoder_padding_mask.any() else None,
+                encoder_padding_mask=encoder_padding_mask if has_pads else None,
                 incremental_state=incremental_state,
             )
             if return_all_hiddens:
@@ -316,6 +343,21 @@ class CausalTransformerEncoder(TransformerEncoder):
         for index, layer in enumerate(self.layers):
             if index < end_id:
                 layer.prune_incremental_state(incremental_state, keep)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        In MT and ASR, src dict is different.
+        1. ignores source embed if size mismatch
+        """
+        ignores = ["embed_tokens.weight", ]
+        cur_state_dict = self.state_dict()
+
+        for w in ignores:
+            if state_dict[w].size() != cur_state_dict[w].size():
+                logger.warning("Ignoring encoder embedding weights! Make sure this is intended...")
+                state_dict[w] = cur_state_dict[w]
+
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 class SpeechTextCascadedEncoder(FairseqEncoder):
@@ -523,15 +565,22 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         return shrinked_states, shrink_lengths
 
 
-@register_model_architecture(
-    "st2t_transformer", "st2t_transformer_s"
-)
-def st2t_transformer_s(args):
-    args.encoder_normalize_before = False
-    args.decoder_normalize_before = False
+@register_model("s2t_seq2seq")
+@create_seq2seq_model
+class S2TSeq2SeqModel(S2TTransformerModel):
+    pass
 
-    args.lookahead = getattr(args, "lookahead", 1)
-    args.encoder_layers = getattr(args, "encoder_layers", 6)
+
+@register_model("conv_seq2seq")
+@create_seq2seq_model
+class ConvSeq2SeqModel(ConvTransformerModel):
+    pass
+
+
+@register_model_architecture(
+    "s2t_seq2seq", "s2t_seq2seq_s"
+)
+def s2t_seq2seq_s(args):    
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
@@ -541,7 +590,20 @@ def st2t_transformer_s(args):
         getattr(args, "fixed_shrink_ratio", 1)
     args.share_decoder_input_output_embed = True
 
-    args.encoder_embed_dim = getattr(args, "encoder_embed_dim", 256)
-    args.encoder_attention_heads = getattr(args, "encoder_attention_heads", 4)
-    args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
-    convtransformer_base_architecture(args)
+    s2t_speech_encoder_s(args)
+
+
+@register_model_architecture(
+    "conv_seq2seq", "conv_seq2seq_s"
+)
+def conv_seq2seq_s(args):
+    args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
+    args.decoder_layers = getattr(args, "decoder_layers", 6)
+    args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
+    if args.do_weighted_shrink:
+        args.fixed_shrink_ratio = 1
+    else:
+        getattr(args, "fixed_shrink_ratio", 1)
+    args.share_decoder_input_output_embed = True
+
+    conv_speech_encoder_s(args)

@@ -31,8 +31,8 @@ from fairseq.modules import (
 
 # user
 from simultaneous_translation.models.seq2seq import (
-    ST2TTransformerModel,
-    st2t_transformer_s
+    ConvSeq2SeqModel,
+    conv_seq2seq_s
 )
 from simultaneous_translation.models.nat_utils import (
     generate,
@@ -56,8 +56,8 @@ class OutProjection(FairseqDecoder):
         return logits, {}
 
 
-@register_model("st2t_sinkhorn_encoder")
-class ST2TSinkhornEncoderModel(ST2TTransformerModel):
+@register_model("conv_sinkhorn")
+class ConvSinkhornModel(ConvSeq2SeqModel):
     """
     causal encoder + ASN + output projection
     """
@@ -68,8 +68,8 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        super(ST2TSinkhornEncoderModel,
-              ST2TSinkhornEncoderModel).add_args(parser)
+        super(ConvSinkhornModel,
+              ConvSinkhornModel).add_args(parser)
         parser.add_argument(
             "--non-causal-layers",
             type=int,
@@ -133,17 +133,10 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
             help="model to take cascade (full speech+text) weights from."
             "This should be the trained `st2t_causal_encoder' model.",
         )
-        parser.add_argument(
-            "--load-pretrained-decoder-from",
-            type=str,
-            metavar="STR",
-            help="model to take decoder (out_projection) weights from (for initialization)."
-            "This should be the trained `st2t_causal_encoder' model.",
-        )
 
     @classmethod
     def build_encoder(cls, args, task, encoder_embed_tokens, ctc_projection, decoder_embed_tokens):
-        encoder = super(ST2TSinkhornEncoderModel, cls).build_encoder(
+        encoder = super(ConvSinkhornModel, cls).build_encoder(
             args, task, encoder_embed_tokens, ctc_projection)
 
         cascade_encoder = ASNAugmentedEncoder(
@@ -185,7 +178,7 @@ class ST2TSinkhornEncoderModel(ST2TTransformerModel):
         Identical to parent, but here encoder also need decoder_embed_tokens.
         """
 
-        st2t_transformer_s(args)
+        conv_seq2seq_s(args)
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -278,9 +271,6 @@ class ASNAugmentedEncoder(FairseqEncoder):
     def __init__(self, args, causal_encoder, tgt_dict, decoder_embed_tokens):
         super().__init__(None)
         self.causal_encoder = causal_encoder
-
-        # add missing args
-        st2t_sinkhorn_encoder_s(args)
 
         args.decoder_normalize_before = args.encoder_normalize_before
         self.non_causal_layers = nn.ModuleList([
@@ -472,9 +462,9 @@ class ASNAugmentedEncoder(FairseqEncoder):
 
 
 @register_model_architecture(
-    "st2t_sinkhorn_encoder", "st2t_sinkhorn_encoder_s"
+    "conv_sinkhorn", "conv_sinkhorn_s"
 )
-def st2t_sinkhorn_encoder_s(args):
+def conv_sinkhorn_s(args):
     args.non_causal_layers = getattr(args, "non_causal_layers", 3)
     args.upsample_ratio = 1  # speech no need to upsample
     args.sinkhorn_tau = getattr(args, "sinkhorn_tau", 0.13)
@@ -484,13 +474,13 @@ def st2t_sinkhorn_encoder_s(args):
     args.sinkhorn_energy = getattr(args, "sinkhorn_energy", "dot")
     args.mask_ratio = getattr(args, "mask_ratio", 0.5)
 
-    st2t_transformer_s(args)
+    conv_seq2seq_s(args)
 
 
 @register_model_architecture(
-    "st2t_sinkhorn_encoder", "st2t_causal_encoder_s"
+    "conv_sinkhorn", "conv_causal_encoder_s"
 )
-def st2t_causal_encoder_s(args):
+def conv_causal_encoder_s(args):
     args.non_causal_layers = 0
     args.sinkhorn_tau = 1
     args.sinkhorn_iters = 1
@@ -501,4 +491,4 @@ def st2t_causal_encoder_s(args):
     args.mask_uniform = False
     args.upsample_ratio = 1
 
-    st2t_transformer_s(args)
+    conv_seq2seq_s(args)

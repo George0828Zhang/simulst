@@ -20,22 +20,22 @@ from simultaneous_translation.modules.monotonic_transformer_layer import (
     WaitkTransformerDecoderLayer,
 )
 from simultaneous_translation.models.seq2seq import (
-    ST2TTransformerModel,
-    st2t_transformer_s
+    ConvSeq2SeqModel,
+    conv_seq2seq_s
 )
 
 logger = logging.getLogger(__name__)
 
 
-@register_model("st2t_transformer_waitk")
-class WaitkST2TTransformerModel(ST2TTransformerModel):
+@register_model("conv_waitk")
+class ConvWaitkModel(ConvSeq2SeqModel):
     """
     causal encoder (+ semantic encoder) + waitk decoder
     """
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        super(WaitkST2TTransformerModel, WaitkST2TTransformerModel).add_args(parser)
+        super(ConvWaitkModel, ConvWaitkModel).add_args(parser)
         parser.add_argument(
             '--waitk-list',
             type=str,
@@ -47,12 +47,6 @@ class WaitkST2TTransformerModel(ST2TTransformerModel):
             type=int,
             required=True,
             help='number of encoder states per read action.')
-        parser.add_argument(
-            "--load-pretrained-decoder-from",
-            type=str,
-            metavar="STR",
-            help="model to take decoder weights from (for initialization)",
-        )
 
     @classmethod
     def build_decoder(cls, args, task, embed_tokens):
@@ -248,7 +242,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
 
 @register_model_architecture(
-    "st2t_transformer_waitk", "st2t_transformer_waitk_s"
+    "conv_waitk", "conv_waitk_s"
 )
-def st2t_transformer_waitk_s(args):
-    st2t_transformer_s(args)
+def conv_waitk_s(args):
+    conv_seq2seq_s(args)
