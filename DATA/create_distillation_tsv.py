@@ -3,7 +3,7 @@ import re
 import sys
 from pathlib import Path
 import pandas as pd
-from data_utils import load_df_from_tsv, save_df_to_tsv
+from examples.speech_to_text.data_utils import load_df_from_tsv, save_df_to_tsv
 from sacremoses import MosesDetokenizer
 
 if __name__ == "__main__":

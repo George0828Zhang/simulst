@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-TASK=ctc_asr
+ARCH=${1:-s2t}
+TASK=${ARCH}_ctc_asr
 . ./data_path.sh
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --config-yaml config_asr.yaml \
     --train-subset train_st_pho_${TGT} \
     --valid-subset dev_st_pho_${TGT} \
-    --max-tokens 80000 \
-    --update-freq 4 \
+    --max-tokens 160000 \
+    --update-freq 2 \
     --task speech_to_text_infer --do-asr \
     --inference-config-yaml infer_asr.yaml \
-    --arch speech_encoder_s \
+    --arch ${ARCH}_speech_encoder_s \
     --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
-    --clip-norm 10.0 \
-    --weight-decay 1e-4 \
-    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
+    --clip-norm 15.0 \
+    --optimizer adam --lr 5e-4 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \

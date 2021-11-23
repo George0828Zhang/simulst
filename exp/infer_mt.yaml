@@ -8,4 +8,4 @@ print_samples: true
 eval_bleu_args:
   sacrebleu_tokenizer: zh
   sacrebleu_lowercase: false
-  sacrebleu_char_level: true
+  sacrebleu_char_level: false

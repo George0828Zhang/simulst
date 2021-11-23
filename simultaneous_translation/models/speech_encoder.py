@@ -154,13 +154,13 @@ def create_encoder_model(klass):
         def max_decoder_positions(self):
             """Used by sequence generator."""
             return self.encoder.max_positions()
-    
+
     SpeechEncoderModel.__name__ = klass.__name__
     return SpeechEncoderModel
 
 
 def causal_encoder(klass):
-    """ This decorator will override following functions 
+    """ This decorator will override following functions
     for a speech encoder to provide streaming capability. """
     class CausalSpeechEncoder(klass):
         """Transformer encoder that consists of causal attention.
@@ -345,6 +345,7 @@ class ConvCausalSpeechEncoder(ConvTransformerEncoder):
 @create_encoder_model
 class S2TSpeechEncoderModel(S2TCausalSpeechEncoder):
     pass
+
 
 @register_model("conv_speech_encoder")
 @create_encoder_model

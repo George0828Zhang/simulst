@@ -10,7 +10,6 @@ from pathlib import Path
 from prep_covost_data import (
     CoVoST
 )
-# from data_utils import (
 from examples.speech_to_text.data_utils import (
     extract_fbank_features,
     cal_gcmvn_stats

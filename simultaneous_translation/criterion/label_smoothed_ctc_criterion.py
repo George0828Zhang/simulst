@@ -204,3 +204,6 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             "f1",
             calc_f1,
         )
+        metrics.log_scalar(
+            "nsentences", nsentences
+        )

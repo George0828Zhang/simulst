@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-TASK=ctc_asr
-SPLIT=$1 #dev #tst-COMMON
+ARCH=${1:-s2t}
+TASK=${ARCH}_ctc_asr
+SPLIT=${2:-dev}
 EXP=../exp
 . ${EXP}/data_path.sh
-DATA=${DATA_ROOT}/joint
+# DATA=${DATA_ROOT}/joint
 CONF=$DATA/config_asr.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
-RESULTS=asr.${SPLIT}.results/
+RESULTS=${TASK}.${SPLIT}.results/
 AVG=true
 
 EXTRAARGS=""
@@ -21,16 +22,17 @@ else
 fi
 
 mkdir -p ${RESULTS}
-for lang in de ; do
+SRC=pho
+for lang in zh-CN ; do
     echo "# evaluating lang: ${lang}"
-    tsv=${DATA}/${SPLIT}_${lang}_asr.tsv
+    tsv=${DATA}/${SPLIT}_st_${SRC}_${lang}.tsv
     tail +2 ${tsv} | cut -f2 > ${RESULTS}/feats.${lang}
     tail +2 ${tsv} | cut -f4 > ${RESULTS}/refs.${lang}
 
     cat ${RESULTS}/feats.${lang} | \
     python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
         --config-yaml ${CONF} \
-        --gen-subset ${SPLIT}_de_asr,${SPLIT}_es_asr \
+        --gen-subset ${SPLIT}_st_${SRC}_${TGT} \
         --task speech_to_text_infer --do-asr \
         --buffer-size 128 --batch-size 128 \
         --inference-config-yaml infer_asr.yaml \

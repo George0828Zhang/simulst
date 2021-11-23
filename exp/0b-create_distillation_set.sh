@@ -9,5 +9,4 @@ python ../DATA/create_distillation_tsv.py \
     --train-file ${TRAIN} \
     --distill-file ${DECODED} \
     --out-file ${OUT} \
-    --detok-lang ${TGT} \
     --verbose 

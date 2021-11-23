@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 ARCH=${1:-s2t}
-TASK=${ARCH}_fixed_seq2seq_nofreeze
+TASK=${ARCH}_ws_seq2seq
 . ./data_path.sh
 CHECKASR=checkpoints/${ARCH}_ctc_asr/avg_best_5_checkpoint.pt
-# CHECKMT=checkpoints/${ARCH}_mt/avg_best_5_checkpoint.pt
-    # --load-pretrained-text-encoder-from ${CHECKMT} \
-    # --load-pretrained-decoder-from ${CHECKMT} \
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${CHECKASR} \
@@ -16,7 +13,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --update-freq 4 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
-    --arch ${ARCH}_seq2seq_s --fixed-shrink-ratio 3 \
+    --arch ${ARCH}_seq2seq_s --do-weighted-shrink \
     --criterion label_smoothed_mtl --label-smoothing 0.1 --asr-factor 0.3 --report-accuracy \
     --clip-norm 1.0 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 2e-3 --lr-scheduler inverse_sqrt \
@@ -35,5 +32,4 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --num-workers 4 \
     --fp16 \
     --seed 2
-    # --encoder-freezing-updates 10000 
     

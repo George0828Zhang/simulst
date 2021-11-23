@@ -73,7 +73,7 @@ mkdir -p ${OUTPUT}
 if [[ ${TGT} == "zh" ]] || [[ ${TGT} == "zh-CN" ]]; then
     BLEU_TOK=zh
     UNIT=char
-    NO_SPACE="--no-space"
+    # NO_SPACE="--no-space"
 fi
 
 CHUNK=$(($WAITK*3))

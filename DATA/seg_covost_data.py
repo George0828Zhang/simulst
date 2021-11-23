@@ -11,15 +11,10 @@ import soundfile as sf
 from prep_covost_data import (
     CoVoST
 )
-from data_utils import (
-    extract_fbank_features,
-    cal_gcmvn_stats
-)
-import numpy as np
 
 from tqdm import tqdm
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def main(args):
@@ -35,8 +30,16 @@ def main(args):
     output.mkdir(exist_ok=True)
     f_text = open(output / f"{split}.{lang}", "w")
     f_wav_list = open(output / f"{split}.wav_list", "w")
-    gcmvn_feature_list = []
+
+    too_long = []
+
     for waveform, sample_rate, _, text, _, utt_id in tqdm(dataset):
+        duration_ms = int(waveform.size(1) / sample_rate * 1000)
+        n_frames = int(1 + (duration_ms - 25) / 10)
+        if n_frames > args.max_frames:
+            too_long += [n_frames]
+            continue
+
         sf.write(
             output / f"{utt_id}.wav",
             waveform.squeeze(0).numpy(),
@@ -44,14 +47,9 @@ def main(args):
         )
         f_text.write(text + "\n")
         f_wav_list.write(str(output / f"{utt_id}.wav") + "\n")
-        if len(gcmvn_feature_list) < args.gcmvn_max_num:
-            features = extract_fbank_features(waveform, sample_rate)
-            gcmvn_feature_list.append(features)
 
-    if (len(gcmvn_feature_list) > 0):
-        stats = cal_gcmvn_stats(gcmvn_feature_list)
-        with open(output / "gcmvn.npz", "wb") as f:
-            np.savez(f, mean=stats["mean"], std=stats["std"])
+    logger.info(f"| long speech (>{args.max_frames} frames): {len(too_long)} filtered, first few id: {too_long[:5]}. ")
+    logger.info("Done.")
 
 
 if __name__ == "__main__":
@@ -64,9 +62,7 @@ if __name__ == "__main__":
     parser.add_argument("--tgt-lang", "-t", type=str)
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--split", required=True, choices=CoVoST.SPLITS)
-    parser.add_argument("--gcmvn-max-num", default=0, type=int,  # 150000
-                        help="Maximum number of sentences to use to estimate"
-                             "global mean and variance")
+    parser.add_argument("--max-frames", default=3000, type=int)
     args = parser.parse_args()
 
     main(args)

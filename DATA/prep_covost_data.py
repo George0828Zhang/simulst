@@ -214,7 +214,7 @@ def process(args):
                 print("And estimating cepstral mean and variance stats...")
             for waveform, sample_rate, _, _, _, utt_id in tqdm(dataset, desc="fbank"):
                 features = extract_fbank_features(
-                    waveform, sample_rate, feature_root / f"{utt_id}.npy"
+                    waveform, sample_rate, feature_root / f"{utt_id}.npy", overwrite=True
                 )
                 if split == 'train' and args.cmvn_type == "global":
                     if len(gcmvn_feature_list) < args.gcmvn_max_num:

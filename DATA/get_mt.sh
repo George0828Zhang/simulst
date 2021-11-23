@@ -5,9 +5,10 @@
 SRC=en
 TGT=${1:-zh-CN}
 DATA_ROOT=/livingrooms/george/covost2
-vocab=4999
+vocab=5199
 vtype=unigram
 workers=4
+REUSETGTSPM=true
 
 FAIRSEQ=~/utility/fairseq
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
@@ -52,6 +53,13 @@ for split in train dev test; do
     done
 done
 
+if [[ $REUSETGTSPM == "true" ]]; then
+    echo "Reusing target (${TGT}) spm and dict."
+    for ext in model txt; do
+    	cp ${DATA}/spm_char_st_${SRC}_${TGT}.${ext} ${prep}/spm_${vtype}${vocab}_${TGT}.${ext}
+    done
+fi
+
 for lang in ${SRC} ${TGT}; do
     echo "Training SPM for ${lang}"
     SPM_PREFIX=${prep}/spm_${vtype}${vocab}_${lang}
@@ -72,9 +80,9 @@ for lang in ${SRC} ${TGT}; do
             --character_coverage=${ccvg} \
             --model_type=$vtype
         cut -f1 ${SPM_PREFIX}.vocab | tail -n +4 | sed "s/$/ 100/g" > ${DICT}
-        cp ${SPM_MODEL} ${bin}
-        cp ${DICT} ${bin}
     fi
+    cp ${SPM_MODEL} ${bin}
+    cp ${DICT} ${bin}
     echo "Using SPM model $SPM_MODEL"
     for split in train dev test; do
         f=${split}.${lang}

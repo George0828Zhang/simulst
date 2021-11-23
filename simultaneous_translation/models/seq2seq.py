@@ -25,12 +25,12 @@ from fairseq.models import (
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerModel,
-    s2t_transformer_s,
+    # s2t_transformer_s,
 )
-from fairseq.models.speech_to_text.convtransformer import (
-    ConvTransformerModel,
-    base_architecture as convtransformer_base_architecture,
-)
+# from fairseq.models.speech_to_text.convtransformer import (
+#     ConvTransformerModel,
+#     base_architecture as convtransformer_base_architecture,
+# )
 
 # user
 from simultaneous_translation.models.speech_encoder import (
@@ -53,7 +53,7 @@ def nan_warn(t: Tensor, name: str):
 
 
 def create_seq2seq_model(klass):
-    class STSeq2SeqModel(klass):
+    class STSeq2SeqModel(S2TTransformerModel):
         """
         causal encoder (+ semantic encoder) + normal decoder
         """
@@ -61,8 +61,7 @@ def create_seq2seq_model(klass):
         def add_args(parser):
             """Add model-specific arguments to the parser.
             """
-            super(STSeq2SeqModel,
-                STSeq2SeqModel).add_args(parser)
+            super(STSeq2SeqModel, STSeq2SeqModel).add_args(parser)
             parser.add_argument(
                 "--lookahead",
                 type=int,
@@ -99,8 +98,12 @@ def create_seq2seq_model(klass):
             )
 
         @classmethod
+        def default_args(cls, args):
+            pass
+
+        @classmethod
         def build_encoder(cls, args, task, embed_tokens, ctc_projection):
-            sp_encoder = CausalSpeechEncoder(
+            sp_encoder = klass(
                 args, task.source_dictionary, ctc_projection)
             if getattr(args, "load_pretrained_encoder_from", None):
                 sp_encoder = checkpoint_utils.load_pretrained_component_from_model(
@@ -123,7 +126,7 @@ def create_seq2seq_model(klass):
                         f"{args.load_pretrained_text_encoder_from}"
                     )
             return SpeechTextCascadedEncoder(args, sp_encoder, tx_encoder)
-        
+
         @classmethod
         def build_decoder(cls, args, task, embed_tokens):
             decoder = super().build_decoder(args, task, embed_tokens)
@@ -142,7 +145,7 @@ def create_seq2seq_model(klass):
         def build_model(cls, args, task):
             """Build a new model instance."""
 
-            st2t_transformer_s(args)
+            cls.default_args(args)
 
             def build_embedding(dictionary, embed_dim):
                 num_embeddings = len(dictionary)
@@ -194,6 +197,15 @@ def create_seq2seq_model(klass):
         def upgrade_state_dict_named(self, state_dict, name):
             """ temp fix for layer index error when loading check"""
             pass
+
+        @property
+        def waitk(self):
+            return 6000  # full-sent
+
+        @property
+        def waitk_stride(self):
+            """ How many encoder states correspond to a single decision """
+            return 3
 
     STSeq2SeqModel.__name__ = klass.__name__
     return STSeq2SeqModel
@@ -367,6 +379,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
 
     def __init__(self, args, speech_encoder, text_encoder=None):
         super().__init__(None)
+        self.encoder_freezing_updates = args.encoder_freezing_updates
         self.speech_encoder = speech_encoder
         self.text_encoder = text_encoder
         self.do_weighted_shrink = args.do_weighted_shrink
@@ -382,6 +395,10 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
     def reorder_encoder_out(self, encoder_out, new_order):
         return self.speech_encoder.reorder_encoder_out(encoder_out, new_order)
 
+    def set_num_updates(self, num_updates):
+        super().set_num_updates(num_updates)
+        self.num_updates = num_updates
+
     def forward(
         self,
         src_tokens,
@@ -390,10 +407,17 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         src_txt_lengths=None,  # unused
     ):
         # encode speech
-        encoder_out = self.speech_encoder(
-            src_tokens=src_tokens, src_lengths=src_lengths)
-        encoder_out = self.forward_ctc_projection(encoder_out)
-        encoder_out = self.shrink_speech(encoder_out)
+        if self.num_updates < self.encoder_freezing_updates:
+            with torch.no_grad():
+                encoder_out = self.speech_encoder(
+                    src_tokens=src_tokens, src_lengths=src_lengths)
+                encoder_out = self.forward_ctc_projection(encoder_out)
+                encoder_out = self.shrink_speech(encoder_out)
+        else:
+            encoder_out = self.speech_encoder(
+                src_tokens=src_tokens, src_lengths=src_lengths)
+            encoder_out = self.forward_ctc_projection(encoder_out)
+            encoder_out = self.shrink_speech(encoder_out)
         # encode text
         if self.text_encoder is not None:
             src_tokens = encoder_out["encoder_out"][0].transpose(0, 1)
@@ -567,27 +591,31 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
 
 @register_model("s2t_seq2seq")
 @create_seq2seq_model
-class S2TSeq2SeqModel(S2TTransformerModel):
-    pass
+class S2TSeq2SeqModel(S2TCausalSpeechEncoder):
+    @classmethod
+    def default_args(cls, args):
+        s2t_seq2seq_s(args)
 
 
 @register_model("conv_seq2seq")
 @create_seq2seq_model
-class ConvSeq2SeqModel(ConvTransformerModel):
-    pass
+class ConvSeq2SeqModel(ConvCausalSpeechEncoder):
+    @classmethod
+    def default_args(cls, args):
+        conv_seq2seq_s(args)
 
 
 @register_model_architecture(
     "s2t_seq2seq", "s2t_seq2seq_s"
 )
-def s2t_seq2seq_s(args):    
+def s2t_seq2seq_s(args):
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
     if args.do_weighted_shrink:
         args.fixed_shrink_ratio = 1
     else:
-        getattr(args, "fixed_shrink_ratio", 1)
+        args.fixed_shrink_ratio = getattr(args, "fixed_shrink_ratio", 1)
     args.share_decoder_input_output_embed = True
 
     s2t_speech_encoder_s(args)
@@ -597,13 +625,14 @@ def s2t_seq2seq_s(args):
     "conv_seq2seq", "conv_seq2seq_s"
 )
 def conv_seq2seq_s(args):
+    args.encoder_freezing_updates = getattr(args, "encoder_freezing_updates", 0)
     args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
     if args.do_weighted_shrink:
         args.fixed_shrink_ratio = 1
     else:
-        getattr(args, "fixed_shrink_ratio", 1)
+        args.fixed_shrink_ratio = getattr(args, "fixed_shrink_ratio", 1)
     args.share_decoder_input_output_embed = True
 
     conv_speech_encoder_s(args)
