@@ -174,7 +174,7 @@ def causal_encoder(klass):
             self.ctc_projection = ctc_projection
 
         def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
-            raise NotImplementedError
+            return super().get_out_seq_lens_tensor(in_seq_lens_tensor)
 
         def forward(
             self,

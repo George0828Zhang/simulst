@@ -99,7 +99,7 @@ def create_seq2seq_model(klass):
 
         @classmethod
         def default_args(cls, args):
-            pass
+            klass.default_args(args)
 
         @classmethod
         def build_encoder(cls, args, task, embed_tokens, ctc_projection):
@@ -197,15 +197,6 @@ def create_seq2seq_model(klass):
         def upgrade_state_dict_named(self, state_dict, name):
             """ temp fix for layer index error when loading check"""
             pass
-
-        @property
-        def waitk(self):
-            return 6000  # full-sent
-
-        @property
-        def waitk_stride(self):
-            """ How many encoder states correspond to a single decision """
-            return 3
 
     STSeq2SeqModel.__name__ = klass.__name__
     return STSeq2SeqModel
@@ -379,6 +370,7 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
 
     def __init__(self, args, speech_encoder, text_encoder=None):
         super().__init__(None)
+        self.num_updates = 0
         self.encoder_freezing_updates = args.encoder_freezing_updates
         self.speech_encoder = speech_encoder
         self.text_encoder = text_encoder

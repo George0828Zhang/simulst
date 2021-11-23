@@ -6,8 +6,9 @@ import torch
 import torchaudio.compliance.kaldi as kaldi
 import yaml
 from fairseq import utils, checkpoint_utils, tasks
-from fairseq.file_io import PathManager
+# from fairseq.file_io import PathManager
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 try:
     from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
@@ -143,7 +144,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.args = args
 
         self.load_model_vocab(args)
-        self.waitk_stride = self.model.waitk_stride
+        self.waitk_stride = 3 if self.full_sentence else self.model.waitk_stride
 
         args.global_cmvn = None
         if args.global_stats:
@@ -370,7 +371,7 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         overlap = 0 if states.finish_read() else self.overlap
         # Step 1: get new speech states
-        sub_source_len = self.model.encoder.speech_encoder.subsample.get_out_seq_lens_tensor(src_lengths).item()
+        sub_source_len = self.model.encoder.speech_encoder.get_out_seq_lens_tensor(src_lengths).item()
         inc_source_len = sub_source_len - speech_len - overlap
         if inc_source_len > 0:
             encoder_out = self.model.encoder.speech_encoder(
@@ -505,7 +506,8 @@ class FairseqSimulSTAgent(SpeechAgent):
         finish = ", RECV_ALL" if states.finish_read() else ""
 
         logger.debug(
-            f"{prefix} SRC: {source_len}, SPH: {shrunk_len}/{speech_len}, TXT: {encoder_len}/{shrunk_state_len}, TGT: {tgt_len}{finish}")
+            f"{prefix} SRC: {source_len}, SPH: {shrunk_len}/{speech_len},"
+            f" TXT: {encoder_len}/{shrunk_state_len}, TGT: {tgt_len}{finish}")
 
     def update_states_read(self, states):
         # Happens after a read action.
