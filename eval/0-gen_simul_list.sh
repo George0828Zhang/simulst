@@ -6,7 +6,7 @@ EVAL_DATA=./data
 echo "segmenting ${SPLIT} data"
 python ../DATA/seg_covost_data.py \
   --data-root ${DATA_ROOT} -s ${SRC} -t ${TGT} \
-  --split ${SPLIT} --max-frames 3000 \
+  --split ${SPLIT} \
   --output ${EVAL_DATA}
 
 echo "tokenize..."
@@ -15,8 +15,3 @@ python ../DATA/text_processors.py zh zh \
 
 echo "copying global cmvn from train data"
 cp ${DATA}/gcmvn.npz ${EVAL_DATA}
-# python ../DATA/get_covost_cmvn.py \
-#   --data-root ${DATA_ROOT} -s ${SRC} -t ${TGT} \
-#   --split train --gcmvn-max-num 1500 \
-#   --output ${EVAL_DATA}
-

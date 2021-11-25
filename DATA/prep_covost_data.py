@@ -203,11 +203,12 @@ def process(args):
         raise NotADirectoryError(f"{root} does not exist")
     # Extract features
     feature_root = root / "fbank80"
+    datasets = {split: CoVoST(root, split, args.src_lang, args.tgt_lang) for split in CoVoST.SPLITS}
     if not args.manifest_only:
         feature_root.mkdir(exist_ok=True)
         for split in CoVoST.SPLITS:
             print(f"Fetching split {split}...")
-            dataset = CoVoST(root, split, args.src_lang, args.tgt_lang)
+            dataset = datasets[split]
             print("Extracting log mel filter bank features...")
             gcmvn_feature_list = []
             if split == 'train' and args.cmvn_type == "global":
@@ -243,7 +244,7 @@ def process(args):
         task = f"st_{args.src_lang}_{args.tgt_lang}"
     for split in CoVoST.SPLITS:
         manifest = {c: [] for c in MANIFEST_COLUMNS}
-        dataset = CoVoST(root, split, args.src_lang, args.tgt_lang)
+        dataset = datasets[split]
         for _, _, src_utt, tgt_utt, speaker_id, utt_id in tqdm(dataset, desc="manifest"):
             manifest["id"].append(utt_id)
             manifest["audio"].append(audio_paths[utt_id])
