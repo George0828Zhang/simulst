@@ -52,31 +52,36 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 # defaults
 AGENT=${AGENT:-"./agents/waitk_fixed_predecision_agent.py"}
 EXP=${EXP:-"../exp"}
-SRC_FILE=${SRC_FILE:-"./data/dev.wav_list"}
-TGT_FILE=${TGT_FILE:-"./data/dev.${TGT}"}
-CMVN=${CMVN:-"./data/gcmvn.npz"}
-
 source ${EXP}/data_path.sh
+
+SRC_FILE=${SRC_FILE:-"./data/dev.wav_list"}
+TGT_FILE=${TGT_FILE:-"./data/dev.${TGT}.tok"}
+CMVN=${CMVN:-"./data/gcmvn.npz"}
+WAITK=${WAITK:-6000}
+
 
 CHECKPOINT=${EXP}/checkpoints/${MODEL}/checkpoint_best.pt
 # SPM_PREFIX=${DATA}/spm_unigram8000_st
 SPM_PREFIX=${DATA}/spm_char_st_${SRC}_${TGT}
 
-PORT=19428
+PORT=12347
 WORKERS=2
 BLEU_TOK=13a
 UNIT=word
+SEGM=word  # this is for agent to post-process the output
 DATANAME=$(basename $(dirname ${DATA}))
 OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.test_${WAITK}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]] || [[ ${TGT} == "zh-CN" ]]; then
     BLEU_TOK=zh
-    UNIT=char
-    # NO_SPACE="--no-space"
+    UNIT=word  # for zh/ja, we'll pre-tokenize the reference, so that latency could be evaluated as words
+    SEGM=char
+    NO_SPACE="--no-space"
 fi
 
 CHUNK=$(($WAITK*3))
+SECONDS=0
 simuleval \
     --agent ${AGENT} \
     --user-dir ${USERDIR} \
@@ -92,13 +97,13 @@ simuleval \
     --overlap 1 \
     --incremental-encoder \
     --sacrebleu-tokenizer ${BLEU_TOK} \
-    --eval-latency-unit word \
-    --segment-type ${UNIT} \
+    --eval-latency-unit ${UNIT} \
+    --segment-type ${SEGM} \
     ${NO_SPACE} \
     --scores \
     --test-waitk ${WAITK} \
     --port ${PORT} \
     --workers ${WORKERS} \
     ${POSITIONAL[@]}
-    # --eval-latency-unit ${UNIT} \
-    # --full-sentence \
+    # --full-sentence
+echo "Elapsed: ${SECONDS}s"

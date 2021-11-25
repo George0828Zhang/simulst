@@ -197,7 +197,7 @@ class FairseqSimulSTAgent(SpeechAgent):
                             help="Subword splitter model path for target text")
         parser.add_argument("--user-dir", type=str, default="examples/simultaneous_translation",
                             help="User directory for simultaneous translation")
-        parser.add_argument("--max-len-a", type=int, default=1.2,
+        parser.add_argument("--max-len-a", type=int, default=0.1,
                             help="Max length of translation ax+b")
         parser.add_argument("--max-len-b", type=int, default=10,
                             help="Max length of translation ax+b")
@@ -287,7 +287,7 @@ class FairseqSimulSTAgent(SpeechAgent):
             return []
 
     def units_to_segment(self, unit_queue, states):
-        """
+        """Merge sub word to full word.
         queue: stores bpe tokens.
         server: accept words.
 
@@ -295,51 +295,83 @@ class FairseqSimulSTAgent(SpeechAgent):
         subword that starts with BOW_PREFIX, then merge with subwords
         prior to this subword, remove them from queue, send to server.
         """
-
-        # Merge sub word to full word.
+        if self.segment_type == "char":
+            return self.units_to_segment_char(unit_queue, states)
         tgt_dict = self.dict["tgt"]
 
         # if segment starts with eos, send EOS
         if tgt_dict.eos() == unit_queue[0]:
             return DEFAULT_EOS
 
+        string_to_return = None
+
+        def decode(tok_idx):
+            hyp = tgt_dict.string(
+                tok_idx,
+                "sentencepiece",
+            )
+            if self.pre_tokenizer is not None:
+                hyp = self.pre_tokenizer.decode(hyp)
+            return hyp
+
         # if force finish, there will be None's
         segment = []
         if None in unit_queue.value:
             unit_queue.value.remove(None)
 
-        src_len = states.encoder_states["encoder_out"][0].size(0)
+        src_len = len(states.units.source)
         if (
             (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
-            or len(states.units.target) > self.max_len(src_len)
+            or 
+            (states.finish_read() and len(states.units.target) > self.max_len(src_len))
         ):
-            hyp = tgt_dict.string(
-                unit_queue,
-                "sentencepiece",
-            )
-            if self.pre_tokenizer is not None:
-                hyp = self.pre_tokenizer.decode(hyp)
-            return [hyp] + [DEFAULT_EOS]
+            hyp = decode(unit_queue)
+            string_to_return = ([hyp] if hyp else []) + [DEFAULT_EOS]
+        else:
+            space_p = None
+            for p, unit_id in enumerate(unit_queue):
+                if p == 0:
+                    continue
+                token = tgt_dict.string([unit_id])
+                if token.startswith(BOW_PREFIX):
+                    """
+                    find the first tokens with escape symbol
+                    """
+                    space_p = p
+                    break
+            if space_p is not None:
+                for j in range(space_p):
+                    segment += [unit_queue.pop()]
 
-        for index in unit_queue:
-            token = tgt_dict.string([index])
-            if token.startswith(BOW_PREFIX):
-                if len(segment) == 0:
-                    segment += [token.replace(BOW_PREFIX, "")]
-                else:
-                    for j in range(len(segment)):
-                        unit_queue.pop()
+                hyp = decode(segment)
+                string_to_return = [hyp] if hyp else []
 
-                    string_to_return = ["".join(segment)]
+                if tgt_dict.eos() == unit_queue[0]:
+                    string_to_return += [DEFAULT_EOS]
 
-                    if tgt_dict.eos() == unit_queue[0]:
-                        string_to_return += [DEFAULT_EOS]
+        return string_to_return
 
-                    return string_to_return
-            else:
-                segment += [token.replace(BOW_PREFIX, "")]
+    def units_to_segment_char(self, unit_queue, states):
+        """ For chinese, direclty send tokens. """
 
-        return None
+        tgt_dict = self.dict["tgt"]
+
+        if None in unit_queue.value:
+            unit_queue.value.remove(None)
+
+        src_len = len(states.units.source)
+        if (
+            (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
+            or
+            (states.finish_read() and len(states.units.target) > self.max_len(src_len))
+        ):
+            return DEFAULT_EOS
+
+        unit_id = unit_queue.value.pop()
+        token = tgt_dict.string([unit_id])
+
+        # even if replace with space, it will be stripped by the server :(
+        return token.replace(BOW_PREFIX, "")
 
     def update_model_encoder(self, states):
         if len(states.units.source) == 0:
