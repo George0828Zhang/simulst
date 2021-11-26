@@ -68,16 +68,16 @@ PORT=12347
 WORKERS=2
 BLEU_TOK=13a
 UNIT=word
-SEGM=word  # this is for agent to post-process the output
 DATANAME=$(basename $(dirname ${DATA}))
 OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.test_${WAITK}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]] || [[ ${TGT} == "zh-CN" ]]; then
+    # for zh, we'll use zh to calculate bleu
     BLEU_TOK=zh
-    UNIT=word  # for zh/ja, we'll pre-tokenize the reference, so that latency could be evaluated as words
-    SEGM=char
-    NO_SPACE="--no-space"
+    # also, pre-tokenize the reference, so that latency could be evaluated as words
+    UNIT=word
+    # NO_SPACE="--no-space"
 fi
 
 CHUNK=$(($WAITK*3))
@@ -98,7 +98,6 @@ simuleval \
     --incremental-encoder \
     --sacrebleu-tokenizer ${BLEU_TOK} \
     --eval-latency-unit ${UNIT} \
-    --segment-type ${SEGM} \
     ${NO_SPACE} \
     --scores \
     --test-waitk ${WAITK} \
