@@ -280,10 +280,6 @@ class FairseqSimulSTAgent(SpeechAgent):
         # Convert speech samples to features
         assert states.sample_rate == self.feature_extractor.sample_rate
         features = self.feature_extractor(segment)
-        if not hasattr(self, "saved"):
-            self.saved = True
-            torch.save(segment, "./debug/online_wav.pt")
-            torch.save(features, "./debug/online_feat.pt")
         if features is not None:
             return [features]
         else:
