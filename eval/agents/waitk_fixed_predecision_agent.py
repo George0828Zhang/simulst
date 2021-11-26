@@ -6,9 +6,9 @@ import torch
 import torchaudio.compliance.kaldi as kaldi
 import yaml
 from fairseq import utils, checkpoint_utils, tasks
+from sacrebleu.tokenizers.tokenizer_zh import TokenizerZh
 # from fairseq.file_io import PathManager
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 try:
     from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
@@ -19,7 +19,7 @@ except ImportError:
 
 SHIFT_SIZE = 10
 WINDOW_SIZE = 25
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 48000
 FEATURE_DIM = 80
 BOW_PREFIX = "\u2581"
 
@@ -75,6 +75,7 @@ class OnlineFeatureExtractor:
             num_mel_bins=self.feature_dim,
             frame_length=self.window_size,
             frame_shift=self.shift_size,
+            sample_frequency=self.sample_rate
         ).numpy()
 
         output = self.transform(output)
@@ -126,7 +127,6 @@ class FairseqSimulSTAgent(SpeechAgent):
         logger.debug(args)
         self.incremental_encoder = args.incremental_encoder
         self.full_sentence = args.full_sentence
-        self.segment_type = args.segment_type
         self.workers = args.workers
         self.speech_segment_size *= args.chunked_read
         logger.info(f"Chunked read size: {self.speech_segment_size} ms (40x{args.chunked_read})")
@@ -144,7 +144,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.args = args
 
         self.load_model_vocab(args)
-        self.waitk_stride = 3 if self.full_sentence else self.model.waitk_stride
+        self.waitk_stride = 3 if self.full_sentence else getattr(self.model, "waitk_stride", 3)
 
         args.global_cmvn = None
         if args.global_stats:
@@ -225,8 +225,6 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--full-sentence", default=False, action="store_true",
                             help="use full sentence strategy, "
                             "by updating the encoder only once after read is finished.")
-        parser.add_argument("--segment-type", type=str, default="word", choices=["word", "char"],
-                            help="Agent can send a word or a char to server at a time.")
         parser.add_argument("--workers", type=int, default=1)
         parser.add_argument("--debug", default=False, action="store_true")
         # fmt: on
@@ -280,7 +278,12 @@ class FairseqSimulSTAgent(SpeechAgent):
 
     def segment_to_units(self, segment, states):
         # Convert speech samples to features
+        assert states.sample_rate == self.feature_extractor.sample_rate
         features = self.feature_extractor(segment)
+        if not hasattr(self, "saved"):
+            self.saved = True
+            torch.save(segment, "./debug/online_wav.pt")
+            torch.save(features, "./debug/online_feat.pt")
         if features is not None:
             return [features]
         else:
@@ -295,8 +298,6 @@ class FairseqSimulSTAgent(SpeechAgent):
         subword that starts with BOW_PREFIX, then merge with subwords
         prior to this subword, remove them from queue, send to server.
         """
-        if self.segment_type == "char":
-            return self.units_to_segment_char(unit_queue, states)
         tgt_dict = self.dict["tgt"]
 
         # if segment starts with eos, send EOS
@@ -330,9 +331,12 @@ class FairseqSimulSTAgent(SpeechAgent):
         else:
             space_p = None
             for p, unit_id in enumerate(unit_queue):
+                token = tgt_dict.string([unit_id])
+                if TokenizerZh._is_chinese_char(token):
+                    space_p = p + 1
+                    break
                 if p == 0:
                     continue
-                token = tgt_dict.string([unit_id])
                 if token.startswith(BOW_PREFIX):
                     """
                     find the first tokens with escape symbol
@@ -346,32 +350,10 @@ class FairseqSimulSTAgent(SpeechAgent):
                 hyp = decode(segment)
                 string_to_return = [hyp] if hyp else []
 
-                if tgt_dict.eos() == unit_queue[0]:
+                if len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[0]:
                     string_to_return += [DEFAULT_EOS]
 
         return string_to_return
-
-    def units_to_segment_char(self, unit_queue, states):
-        """ For chinese, direclty send tokens. """
-
-        tgt_dict = self.dict["tgt"]
-
-        if None in unit_queue.value:
-            unit_queue.value.remove(None)
-
-        src_len = len(states.units.source)
-        if (
-            (len(unit_queue) > 0 and tgt_dict.eos() == unit_queue[-1])
-            or
-            (states.finish_read() and len(states.units.target) > self.max_len(src_len))
-        ):
-            return DEFAULT_EOS
-
-        unit_id = unit_queue.value.pop()
-        token = tgt_dict.string([unit_id])
-
-        # even if replace with space, it will be stripped by the server :(
-        return token.replace(BOW_PREFIX, "")
 
     def update_model_encoder(self, states):
         if len(states.units.source) == 0:
@@ -589,15 +571,13 @@ class FairseqSimulSTAgent(SpeechAgent):
                 ).unsqueeze(0)
             )
 
-            logits, extra = self.model.forward_decoder(
+            logits, extra = self.model.decoder.forward(
                 prev_output_tokens=tgt_indices,
                 encoder_out=states.encoder_states,
                 incremental_state=states.dec_incremental_states,
             )
 
             states.decoder_out = logits
-
-            states.decoder_out_extra = extra
 
             torch.cuda.empty_cache()
 
