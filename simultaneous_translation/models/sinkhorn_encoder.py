@@ -31,8 +31,8 @@ from fairseq.modules import (
 
 # user
 from simultaneous_translation.models.seq2seq import (
-    ConvSeq2SeqModel,
-    conv_seq2seq_s
+    S2TSeq2SeqModel,
+    s2t_seq2seq_s
 )
 from simultaneous_translation.models.nat_utils import (
     generate,
@@ -56,8 +56,8 @@ class OutProjection(FairseqDecoder):
         return logits, {}
 
 
-@register_model("conv_sinkhorn")
-class ConvSinkhornModel(ConvSeq2SeqModel):
+@register_model("s2t_sinkhorn")
+class S2TSinkhornModel(S2TSeq2SeqModel):
     """
     causal encoder + ASN + output projection
     """
@@ -68,8 +68,8 @@ class ConvSinkhornModel(ConvSeq2SeqModel):
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        super(ConvSinkhornModel,
-              ConvSinkhornModel).add_args(parser)
+        super(S2TSinkhornModel,
+              S2TSinkhornModel).add_args(parser)
         parser.add_argument(
             "--non-causal-layers",
             type=int,
@@ -136,7 +136,7 @@ class ConvSinkhornModel(ConvSeq2SeqModel):
 
     @classmethod
     def build_encoder(cls, args, task, encoder_embed_tokens, ctc_projection, decoder_embed_tokens):
-        encoder = super(ConvSinkhornModel, cls).build_encoder(
+        encoder = super().build_encoder(
             args, task, encoder_embed_tokens, ctc_projection)
 
         cascade_encoder = ASNAugmentedEncoder(
@@ -178,7 +178,7 @@ class ConvSinkhornModel(ConvSeq2SeqModel):
         Identical to parent, but here encoder also need decoder_embed_tokens.
         """
 
-        conv_seq2seq_s(args)
+        s2t_seq2seq_s(args)
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -462,9 +462,9 @@ class ASNAugmentedEncoder(FairseqEncoder):
 
 
 @register_model_architecture(
-    "conv_sinkhorn", "conv_sinkhorn_s"
+    "s2t_sinkhorn", "s2t_sinkhorn_s"
 )
-def conv_sinkhorn_s(args):
+def s2t_sinkhorn_s(args):
     args.non_causal_layers = getattr(args, "non_causal_layers", 3)
     args.upsample_ratio = 1  # speech no need to upsample
     args.sinkhorn_tau = getattr(args, "sinkhorn_tau", 0.13)
@@ -474,13 +474,13 @@ def conv_sinkhorn_s(args):
     args.sinkhorn_energy = getattr(args, "sinkhorn_energy", "dot")
     args.mask_ratio = getattr(args, "mask_ratio", 0.5)
 
-    conv_seq2seq_s(args)
+    s2t_seq2seq_s(args)
 
 
 @register_model_architecture(
-    "conv_sinkhorn", "conv_causal_encoder_s"
+    "s2t_sinkhorn", "s2t_causal_encoder_s"
 )
-def conv_causal_encoder_s(args):
+def s2t_causal_encoder_s(args):
     args.non_causal_layers = 0
     args.sinkhorn_tau = 1
     args.sinkhorn_iters = 1
@@ -491,4 +491,4 @@ def conv_causal_encoder_s(args):
     args.mask_uniform = False
     args.upsample_ratio = 1
 
-    conv_seq2seq_s(args)
+    s2t_seq2seq_s(args)

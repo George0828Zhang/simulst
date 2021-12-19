@@ -20,22 +20,22 @@ from simultaneous_translation.modules.monotonic_transformer_layer import (
     WaitkTransformerDecoderLayer,
 )
 from simultaneous_translation.models.seq2seq import (
-    ConvSeq2SeqModel,
-    conv_seq2seq_s
+    S2TSeq2SeqModel,
+    s2t_seq2seq_s
 )
 
 logger = logging.getLogger(__name__)
 
 
-@register_model("conv_waitk")
-class ConvWaitkModel(ConvSeq2SeqModel):
+@register_model("s2t_waitk")
+class S2TWaitkModel(S2TSeq2SeqModel):
     """
     causal encoder (+ semantic encoder) + waitk decoder
     """
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
-        super(ConvWaitkModel, ConvWaitkModel).add_args(parser)
+        super(S2TWaitkModel, S2TWaitkModel).add_args(parser)
         parser.add_argument(
             '--waitk-list',
             type=str,
@@ -242,7 +242,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
 
 
 @register_model_architecture(
-    "conv_waitk", "conv_waitk_s"
+    "s2t_waitk", "s2t_waitk_s"
 )
-def conv_waitk_s(args):
-    conv_seq2seq_s(args)
+def s2t_waitk_s(args):
+    s2t_seq2seq_s(args)
