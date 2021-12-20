@@ -5,14 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 # from collections import OrderedDict
-from fairseq import checkpoint_utils
+from fairseq import checkpoint_utils, utils
 import math
 import logging
-import re
+from typing import Optional, Dict, List
 
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+from fairseq.data.data_utils import lengths_to_padding_mask
 from fairseq.models import (
     register_model,
     register_model_architecture,
@@ -21,7 +22,7 @@ from fairseq.models import (
 )
 from fairseq.models.transformer import (
     Embedding,
-    Linear,
+    # Linear,
 )
 from fairseq.modules import (
     LayerNorm,
@@ -30,6 +31,10 @@ from fairseq.modules import (
 )
 
 # user
+# from simultaneous_translation.models.speech_encoder import (
+#     CausalSpeechEncoderModel,
+#     CausalSpeechEncoder
+# )
 from simultaneous_translation.models.seq2seq import (
     S2TSeq2SeqModel,
     s2t_seq2seq_s
@@ -70,6 +75,18 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         """Add model-specific arguments to the parser."""
         super(S2TSinkhornModel,
               S2TSinkhornModel).add_args(parser)
+        parser.add_argument(
+            "--do-weighted-shrink",
+            action="store_true",
+            default=False,
+            help="shrink the encoder states based on ctc output.",
+        )
+        parser.add_argument(
+            "--fixed-shrink-ratio",
+            type=int,
+            default=1,
+            help="shrink speech encoder output as fixed-length segments.",
+        )
         parser.add_argument(
             "--non-causal-layers",
             type=int,
@@ -136,11 +153,13 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
 
     @classmethod
     def build_encoder(cls, args, task, encoder_embed_tokens, ctc_projection, decoder_embed_tokens):
-        encoder = super().build_encoder(
-            args, task, encoder_embed_tokens, ctc_projection)
-
-        cascade_encoder = ASNAugmentedEncoder(
-            args, encoder, task.tgt_dict, decoder_embed_tokens)
+        cascade_encoder = CascadeEncoders([
+            S2TSeq2SeqModel.build_encoder(
+                args, task, encoder_embed_tokens, ctc_projection),
+            CTCWeightedShrink(
+                args, task.source_dictionary)
+        ])
+        # load weights from pure ctc first
         if getattr(args, "load_pretrained_cascade_from", None):
             cascade_encoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=cascade_encoder, checkpoint=args.load_pretrained_cascade_from
@@ -149,6 +168,11 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
                 f"loaded pretrained cascade encoder from: "
                 f"{args.load_pretrained_cascade_from}"
             )
+        # then add asn now
+        cascade_encoder.encoders.append(
+            AuxiliarySortingNetwork(
+                args, task.target_dictionary, decoder_embed_tokens)
+        )
         return cascade_encoder
 
     @classmethod
@@ -178,7 +202,7 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         Identical to parent, but here encoder also need decoder_embed_tokens.
         """
 
-        s2t_seq2seq_s(args)
+        s2t_sinkhorn_s(args)
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -211,12 +235,13 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         src_txt_tokens=None,  # unused
         src_txt_lengths=None,  # unused
     ):
-        """changed encoder forward to forward_train.
-        added prev_output_tokens to encoder for ASN.
-        """
+        """ causal forward """
         encoder_out = self.encoder.forward(
             src_tokens=src_tokens,
             src_lengths=src_lengths,
+            src_txt_tokens=src_txt_tokens,
+            src_txt_lengths=src_txt_lengths,
+            causal=True
         )
         logits, decoder_out = self.decoder(
             prev_output_tokens=None, encoder_out=encoder_out
@@ -237,12 +262,12 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         src_txt_tokens=None,  # unused
         src_txt_lengths=None,  # unused
     ):
-        """changed encoder forward to forward_train.
-        added prev_output_tokens to encoder for ASN.
-        """
-        encoder_out = self.encoder.forward_train(
+        """ non-causal forward """
+        encoder_out = self.encoder.forward(
             src_tokens=src_tokens,
             src_lengths=src_lengths,
+            src_txt_tokens=src_txt_tokens,
+            src_txt_lengths=src_txt_lengths,
             prev_output_tokens=prev_output_tokens,
         )
         logits, decoder_out = self.decoder(
@@ -261,24 +286,253 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx)
 
 
-class ASNAugmentedEncoder(FairseqEncoder):
-    """
-    Add following layers to the causal encoder,
-    1) several non-causal encoder layers
-    2) 1 sinkhorn attention
-    """
+class CascadeEncoders(FairseqEncoder):
+    """ takes src_tokens, src_lengths as inputs,
+    go through ALL encoder sub-modules,
+    and outputs the encoder_out dictionary containing:
+        "encoder_out": [x],  # T x B x C
+        "encoder_padding_mask": [encoder_padding_mask] if has_pads else [],  # B x T
+        "encoder_states": encoder_states,  # List[T x B x C]
 
-    def __init__(self, args, causal_encoder, tgt_dict, decoder_embed_tokens):
+    Note:
+        the first module should accept speech input and should contain ctc projection
+    """
+    def __init__(self, encoders: List[nn.Module]):
         super().__init__(None)
-        self.causal_encoder = causal_encoder
+        assert hasattr(encoders[0], "ctc_projection"), "the first module should contain ctc projection"
+        self.encoders = nn.ModuleList(encoders)
+
+    def forward_ctc_projection(self, module, encoder_out):
+        """ assume module contains ctc_projection (please check) """
+        layer_id = module.mtl_layer_id
+        layer_norm = module.ctc_layer_norm
+        speech_states = encoder_out["encoder_states"][layer_id]
+        # layernorm
+        if layer_norm is not None:
+            speech_states = layer_norm(speech_states)
+        # ctc projection
+        logits = module.ctc_projection(
+            speech_states).transpose(0, 1)
+
+        encoder_out.update({
+            "encoder_logits": [logits],
+            "speech_padding_mask": encoder_out["encoder_padding_mask"]
+        })
+        return encoder_out
+
+    def forward(
+        self,
+        src_tokens,
+        src_lengths,
+        src_txt_tokens: Optional[torch.Tensor] = None,      # unused
+        src_txt_lengths: Optional[torch.Tensor] = None,     # unused
+        prev_output_tokens: Optional[torch.Tensor] = None,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]] = None,
+        incremental_step: Optional[int] = 1,
+        return_all_hiddens: bool = False,
+        causal=False
+    ):
+        for i, module in enumerate(self.encoders):
+            if i == 0:
+                encoder_out = module.forward(
+                    src_tokens=src_tokens,
+                    src_lengths=src_lengths,
+                    incremental_state=incremental_state,
+                    incremental_step=incremental_step,
+                    return_all_hiddens=True
+                )
+                encoder_out = self.forward_ctc_projection(module, encoder_out)
+                encoder_out["prev_output_tokens"] = prev_output_tokens
+            else:
+                encoder_out = module(encoder_out, causal=causal)
+
+        return encoder_out
+
+    # @property
+    # def src_dict(self):
+    #     return self.encoders[0].src_dict
+
+    def reorder_encoder_out(self, encoder_out, new_order):
+        return self.encoders[0].reorder_encoder_out(encoder_out, new_order)
+
+    # def set_num_updates(self, num_updates):
+    #     super().set_num_updates(num_updates)
+    #     self.num_updates = num_updates
+
+    # def load_state_dict(self, state_dict, strict=True):
+    #     """
+    #     1. ignores missing non_causal_layers (loading from causal_st)
+    #     """
+    #     ignores = re.compile("^non_causal_layers.")
+    #     cur_state_dict = self.state_dict()
+    #     new_state_dict = state_dict
+    #     for k, v in cur_state_dict.items():
+    #         if ignores.search(k) is not None:
+    #             new_state_dict[k] = v
+    #     return super().load_state_dict(new_state_dict, strict=strict)
+
+
+def nan_warn(t: torch.Tensor, name: str):
+    # assert not shrinked_states.isnan().any()
+    if t.isnan().any():
+        logger.warning(f"NaN detected in tensor named: {name}")
+
+
+class FixedShrink(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.fixed_shrink_ratio = args.fixed_shrink_ratio
+
+    def shrinking_op(self, speech_states, logits, speech_padding_mask=None):
+        S, B, E = speech_states.size()
+        if speech_padding_mask is not None:
+            assert tuple(speech_padding_mask.shape[:2]) == (B, S)
+        else:
+            speech_padding_mask = speech_states.new_zeros(
+                (B, S), dtype=torch.bool)
+
+        ratio = self.fixed_shrink_ratio
+        v = speech_states.transpose(0, 1)
+        new_speech_padding_mask = speech_padding_mask
+        buckets = math.ceil(S / ratio)
+
+        # pad key value
+        new_S = buckets * ratio
+        if new_S != S:
+            v = torch.cat([
+                v,
+                v.new_zeros((B, new_S - S, E)),
+            ], dim=1)
+            new_speech_padding_mask = torch.cat([
+                speech_padding_mask,
+                speech_padding_mask.new_ones((B, new_S - S)),
+            ], dim=1)
+
+        # remove padded states' influence
+        v = v * (1 - new_speech_padding_mask.unsqueeze(-1).type_as(v))
+
+        # aggregate buckets (B, new_S, E) -> (B, buckets, E)
+        shrinked_states = v.view(
+            B, buckets, ratio, E).mean(dim=2).transpose(1, 0)
+        # aggregate padding mask by: if a bucket is all pad then it is masked.
+        new_speech_padding_mask = new_speech_padding_mask.view(
+            B, buckets, ratio).prod(dim=2).bool()
+        shrink_lengths = (~new_speech_padding_mask).sum(-1)
+
+        assert shrinked_states.size(1) == B
+        # assert not shrinked_states.isnan().any()
+        nan_warn(shrinked_states, "fixed_shrink")
+
+        return shrinked_states, shrink_lengths
+
+    def forward(self, encoder_out, causal=False):
+        # speech mask
+        speech_padding_mask = encoder_out["encoder_padding_mask"][0] \
+            if len(encoder_out["encoder_padding_mask"]) > 0 else None
+
+        # speech hidden states
+        speech_states = encoder_out["encoder_out"][0]
+        logits = encoder_out["encoder_logits"][0]
+
+        B, S, C = logits.size()
+        shrinked_states, shrink_lengths = self.shrinking_op(
+            speech_states,
+            logits,
+            speech_padding_mask
+        )
+
+        encoder_padding_mask = lengths_to_padding_mask(shrink_lengths)
+        # calculate shrink rate
+        src_lengths = shrink_lengths.new_full(
+            (B,), S) if speech_padding_mask is None else (~speech_padding_mask).sum(-1).type_as(shrink_lengths)
+        shrink_rate = (src_lengths / shrink_lengths).sum()
+
+        encoder_out.update({
+            "encoder_out": [shrinked_states],  # T x B x C
+            "encoder_padding_mask": [encoder_padding_mask],  # B x T
+            "speech_padding_mask": [speech_padding_mask],
+            "shrink_rate": [shrink_rate]
+        })
+        return encoder_out
+
+
+class CTCWeightedShrink(FixedShrink):
+    def __init__(self, args, src_dict):
+        super().__init__(args)
+        self.src_dict = src_dict
+
+    def shrinking_op(self, speech_states, logits, speech_padding_mask=None):
+        blank = self.src_dict.bos()
+        pad = self.src_dict.pad()
+
+        B, S, C = logits.size()
+        if speech_padding_mask is not None:
+            # replace paddings' logits s.t. they predict pads
+            one_hot = F.one_hot(torch.LongTensor([pad]), C).type_as(logits)
+            logits[speech_padding_mask] = one_hot
+
+        # predict CTC tokens
+        ctc_pred = logits.argmax(-1)
+        # previos predictions
+        pre_pred = torch.cat(
+            (
+                ctc_pred[:, :1],  # dup first
+                ctc_pred[:, :-1],
+            ), dim=1
+        )
+        # boundary condition & aggregate to segment id
+        segment_ids = ((pre_pred != blank) & (ctc_pred != pre_pred)) | (
+            (ctc_pred == pad) & (ctc_pred != pre_pred))
+        segment_ids = segment_ids.cumsum(dim=1)
+        # prepare attn matrix with max len
+        shrink_lengths = segment_ids.max(dim=1)[0] + 1
+        neg_inf = -1e8 if logits.dtype == torch.float32 else -1e4  # -torch.finfo(logits.dtype).max
+        attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
+        # compute non-blank confidence
+        confidence = 1 - logits.softmax(-1)[..., blank]
+        # compute attn to shrink speech states
+        attn_weights.scatter_(
+            1,
+            segment_ids.unsqueeze(1),
+            confidence.unsqueeze(1)
+        )
+        attn_weights = utils.softmax(
+            attn_weights, dim=-1
+        ).type_as(speech_states)
+        # attn_weights = self.dropout_module(attn_weights)
+
+        # shrink speech states
+        # (B, S', S) x (B, S, D) -> (B, S', D) -> (S', B, D)
+        shrinked_states = torch.bmm(
+            attn_weights,
+            speech_states.transpose(0, 1)
+        ).transpose(0, 1)
+
+        assert shrinked_states.size(1) == B
+        # assert not shrinked_states.isnan().any()
+        nan_warn(shrinked_states, "ws_shrink")
+        if speech_padding_mask is not None:
+            # pad states are shrunk to a segment
+            # remove this 'pad segment'
+            # first set pad segment to 0
+            segment_ids = segment_ids * (1 - speech_padding_mask.long())
+            real_shrink_lengths = segment_ids.max(dim=1)[0] + 1
+            if real_shrink_lengths.max() < shrink_lengths.max():
+                shrink_lengths = real_shrink_lengths
+                shrinked_states = shrinked_states[:shrink_lengths.max(), ...]
+            del segment_ids
+
+        return shrinked_states, shrink_lengths
+
+
+class AuxiliarySortingNetwork(nn.Module):
+    def __init__(self, args, tgt_dict, decoder_embed_tokens):
+        super().__init__()
 
         args.decoder_normalize_before = args.encoder_normalize_before
         self.non_causal_layers = nn.ModuleList([
             TransformerDecoderLayer(args) for i in range(args.non_causal_layers)
         ])
-        self.train_causal = args.non_causal_layers == 0
-        if self.train_causal:
-            logger.info("Training causal encoder only! # non causal layers is 0.")
         export = getattr(args, "export", False)
         if args.encoder_normalize_before:
             self.layer_norm = LayerNorm(args.encoder_embed_dim, export=export)
@@ -297,10 +551,10 @@ class ASNAugmentedEncoder(FairseqEncoder):
             sinkhorn_noise_factor=args.sinkhorn_noise_factor,
             energy_fn=args.sinkhorn_energy,
         )
-        self.upsample_ratio = args.upsample_ratio
-        if self.upsample_ratio > 1:
-            self.upsampler = Linear(
-                args.encoder_embed_dim, args.encoder_embed_dim * self.upsample_ratio)
+        # self.upsample_ratio = args.upsample_ratio
+        # if self.upsample_ratio > 1:
+        #     self.upsampler = Linear(
+        #         args.encoder_embed_dim, args.encoder_embed_dim * self.upsample_ratio)
 
         # below are for input target feeding
         if args.mask_ratio == 1.0:
@@ -324,71 +578,38 @@ class ASNAugmentedEncoder(FairseqEncoder):
             else None
         )
 
-    def upsample(self, x, encoder_padding_mask):
-        if self.upsample_ratio == 1:
-            return x, encoder_padding_mask
+    # def upsample(self, x, encoder_padding_mask):
+    #     if self.upsample_ratio == 1:
+    #         return x, encoder_padding_mask
 
-        if encoder_padding_mask is not None:
-            encoder_padding_mask = encoder_padding_mask.repeat_interleave(
-                self.upsample_ratio, dim=1)
+    #     if encoder_padding_mask is not None:
+    #         encoder_padding_mask = encoder_padding_mask.repeat_interleave(
+    #             self.upsample_ratio, dim=1)
 
-        T, B, C = x.size()
-        # T x B x C
-        # -> T x B x C*U
-        # -> U * (T x B x C)
-        # -> T x U x B x C
-        # -> T*U x B x C
-        x = torch.stack(
-            torch.chunk(
-                self.upsampler(x),
-                self.upsample_ratio,
-                dim=-1
-            ),
-            dim=1
-        ).view(-1, B, C)
-        return x, encoder_padding_mask
+    #     T, B, C = x.size()
+    #     # T x B x C
+    #     # -> T x B x C*U
+    #     # -> U * (T x B x C)
+    #     # -> T x U x B x C
+    #     # -> T*U x B x C
+    #     x = torch.stack(
+    #         torch.chunk(
+    #             self.upsampler(x),
+    #             self.upsample_ratio,
+    #             dim=-1
+    #         ),
+    #         dim=1
+    #     ).view(-1, B, C)
+    #     return x, encoder_padding_mask
 
-    def forward(
-        self, src_tokens, src_lengths,
-        src_txt_tokens=None,  # unused
-        src_txt_lengths=None,  # unused
-    ):
-        causal_out = self.causal_encoder(src_tokens, src_lengths)
-        x = causal_out["encoder_out"][0]
-        encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
-            if len(causal_out["encoder_padding_mask"]) > 0 else None
-        x, encoder_padding_mask = self.upsample(x, encoder_padding_mask)
-        causal_out.update({
-            "encoder_out": [x],  # T x B x C
-            # B x T
-            "encoder_padding_mask": [encoder_padding_mask] if encoder_padding_mask is not None else [],
-            "attn": [],
-            "log_alpha": [],
-        })
-        return causal_out
-
-    def forward_train(
-        self, src_tokens, src_lengths,
-        prev_output_tokens,
-        src_txt_tokens=None,  # unused
-        src_txt_lengths=None,  # unused
-    ):
+    def forward(self, causal_out, causal=False):
         """ Added forwards for non-causal and sinkhorn attention """
-        if self.train_causal:
-            return self.forward(
-                src_tokens,
-                src_lengths,
-                src_txt_tokens,
-                src_txt_lengths,
-            )
-
-        causal_out = self.causal_encoder(src_tokens, src_lengths)
-
         # causal outputs
         causal_states = x = causal_out["encoder_out"][0]
         encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
             if len(causal_out["encoder_padding_mask"]) > 0 else None
         encoder_states = causal_out["encoder_states"]
+        prev_output_tokens = causal_out["prev_output_tokens"]
 
         # target feeding (noise + pos emb)
         if self.mask_ratio == 1.:
@@ -397,7 +618,7 @@ class ASNAugmentedEncoder(FairseqEncoder):
             prev_tokens, prev_padding_mask = inject_noise(
                 prev_output_tokens,
                 self.tgt_dict,
-                ratio=self.mask_ratio,
+                ratio=self.mask_ratio if self.training else 0,
                 uniform=self.mask_uniform,
             )
 
@@ -428,9 +649,9 @@ class ASNAugmentedEncoder(FairseqEncoder):
             encoder_padding_mask,
         )
 
-        # upsample
-        x, encoder_padding_mask = self.upsample(x, encoder_padding_mask)
-        causal_states, _ = self.upsample(causal_states, None)
+        # # upsample
+        # x, encoder_padding_mask = self.upsample(x, encoder_padding_mask)
+        # causal_states, _ = self.upsample(causal_states, None)
 
         causal_out.update({
             "encoder_out": [x],
@@ -442,31 +663,13 @@ class ASNAugmentedEncoder(FairseqEncoder):
         })
         return causal_out
 
-    def reorder_encoder_out(self, encoder_out, new_order):
-        """ This reorder is fairseq's reordering of batch dimension,
-        different from our reorder.
-        """
-        return self.causal_encoder.reorder_encoder_out(encoder_out, new_order)
-
-    def load_state_dict(self, state_dict, strict=True):
-        """
-        1. ignores missing non_causal_layers (loading from causal_st)
-        """
-        ignores = re.compile("^non_causal_layers.")
-        cur_state_dict = self.state_dict()
-        new_state_dict = state_dict
-        for k, v in cur_state_dict.items():
-            if ignores.search(k) is not None:
-                new_state_dict[k] = v
-        return super().load_state_dict(new_state_dict, strict=strict)
-
 
 @register_model_architecture(
     "s2t_sinkhorn", "s2t_sinkhorn_s"
 )
 def s2t_sinkhorn_s(args):
     args.non_causal_layers = getattr(args, "non_causal_layers", 3)
-    args.upsample_ratio = 1  # speech no need to upsample
+    # args.upsample_ratio = 1  # speech no need to upsample
     args.sinkhorn_tau = getattr(args, "sinkhorn_tau", 0.13)
     args.sinkhorn_iters = getattr(args, "sinkhorn_iters", 16)
     args.sinkhorn_noise_factor = getattr(args, "sinkhorn_noise_factor", 0.45)
@@ -489,6 +692,6 @@ def s2t_causal_encoder_s(args):
     args.sinkhorn_energy = "dot"
     args.mask_ratio = 1
     args.mask_uniform = False
-    args.upsample_ratio = 1
+    # args.upsample_ratio = 1
 
     s2t_seq2seq_s(args)
