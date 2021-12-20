@@ -31,7 +31,7 @@ class CausalTransformerEncoderLayer(TransformerEncoderLayer):
                 not self._future_mask.device == tensor.device
             ) or self._future_mask.size(0) < dim
         ):
-            neg_inf = -torch.finfo(tensor.dtype).max
+            neg_inf = -1e8 if tensor.dtype == torch.float32 else -1e4  # -torch.finfo(tensor.dtype).max
             self._future_mask = torch.triu(
                 torch.full([dim, dim], neg_inf), self.delay
             )

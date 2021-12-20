@@ -107,7 +107,7 @@ class WaitkTransformerDecoder(TransformerDecoder):
         if waitk >= pooled_src_len:
             return None
 
-        neg_inf = -torch.finfo(x.dtype).max
+        neg_inf = -1e8 if x.dtype == torch.float32 else -1e4  # -torch.finfo(x.dtype).max
         encoder_attn_mask = torch.triu(
             x.new_full(
                 (x.size(0), pooled_src_len),
