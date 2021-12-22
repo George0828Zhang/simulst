@@ -48,6 +48,11 @@ def calc_recall_precision(predict, target, blank_idx=0, pad_idx=1, eps=1e-8):
     return recall.sum(), precision.sum()
 
 
+def log1mexp(x: torch.Tensor) -> torch.Tensor:
+    """ https://stats.stackexchange.com/questions/469706/log1-softmaxx """
+    return torch.where(x > -0.693147, torch.log(-torch.expm1(x)), torch.log1p(-torch.exp(x)))
+
+
 @dataclass
 class LabelSmoothedCTCCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
     zero_infinity: Optional[bool] = field(
@@ -135,8 +140,9 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
             non_padding_mask = ~net_output[1]["padding_mask"]
             input_lengths = non_padding_mask.long().sum(-1)
         else:
-            input_lengths = lprobs.new_ones(
-                (bsz, max_src), dtype=torch.long).sum(-1)
+            non_padding_mask = lprobs.new_ones(
+                (bsz, max_src), dtype=torch.long)
+            input_lengths = non_padding_mask.sum(-1)
 
         pad_mask = (target != self.pad_idx) & (
             target != self.eos_idx
@@ -155,15 +161,33 @@ class LabelSmoothedCTCCriterion(LabelSmoothedCrossEntropyCriterion):
                 zero_infinity=self.zero_infinity,
             )
 
-        # label smoothing
-        smooth_loss = -lprobs.sum(dim=-1).transpose(1, 0)  # (L,B) -> (B,L)
-        if net_output[1]["padding_mask"] is not None:
-            smooth_loss.masked_fill_(
-                net_output[1]["padding_mask"],
-                0.0
-            )
-        eps_i = self.eps / lprobs.size(-1)
-        loss = (1.0 - self.eps) * nll_loss + eps_i * smooth_loss.sum()
+        # # label smoothing
+        # smooth_loss = -lprobs.sum(dim=-1).transpose(1, 0)  # (L,B) -> (B,L)
+        # if net_output[1]["padding_mask"] is not None:
+        #     smooth_loss.masked_fill_(
+        #         net_output[1]["padding_mask"],
+        #         0.0
+        #     )
+        # eps_i = self.eps / lprobs.size(-1)
+        # loss = (1.0 - self.eps) * nll_loss + eps_i * smooth_loss.sum()
+
+        # Delay Penaly
+        # predict CTC tokens (L,B,X) -> (L,B)
+        ctc_pred = lprobs.argmax(-1)
+        # previos predictions (L,B)
+        pre_pred = torch.cat(
+            (
+                ctc_pred.new_full((1, bsz), self.blank_idx),  # use blank
+                ctc_pred[:-1, :],
+            ), dim=0
+        )
+        # penalty condition
+        penalize_mask = (
+            (ctc_pred == self.blank_idx) | (ctc_pred == pre_pred)) & non_padding_mask.bool().transpose(0, 1)
+
+        # delay_loss = lprobs[penalize_mask].gather(dim=-1, index=ctc_pred[penalize_mask].unsqueeze(-1))
+        delay_loss = -log1mexp(lprobs[penalize_mask]).gather(dim=-1, index=ctc_pred[penalize_mask].unsqueeze(-1))
+        loss = nll_loss + self.eps * delay_loss.sum()
 
         return loss, nll_loss
 

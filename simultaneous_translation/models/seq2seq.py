@@ -102,7 +102,7 @@ def create_seq2seq_model(klass):
             klass.default_args(args)
 
         @classmethod
-        def build_encoder(cls, args, task, embed_tokens, ctc_projection):
+        def build_encoder(cls, args, task, embed_tokens, ctc_projection, non_causal_text=False):
             sp_encoder = klass(
                 args, task.source_dictionary, ctc_projection)
             if getattr(args, "load_pretrained_encoder_from", None):
@@ -116,7 +116,7 @@ def create_seq2seq_model(klass):
             tx_encoder = None
             if args.text_encoder_layers > 0:
                 tx_encoder = CausalTransformerEncoder(
-                    args, task.source_dictionary, embed_tokens)
+                    args, task.source_dictionary, embed_tokens, non_causal=non_causal_text)
                 if getattr(args, "load_pretrained_text_encoder_from", None):
                     tx_encoder = checkpoint_utils.load_pretrained_component_from_model(
                         component=tx_encoder, checkpoint=args.load_pretrained_text_encoder_from
@@ -206,10 +206,11 @@ class CausalTransformerEncoder(TransformerEncoder):
     """Transformer encoder that consists of causal attention.
     """
 
-    def __init__(self, args, dictionary, embed_tokens):
+    def __init__(self, args, dictionary, embed_tokens, non_causal=False):
         super().__init__(args, dictionary, embed_tokens)
+        delay = 60000 if non_causal else 1
         self.layers = nn.ModuleList([
-            CausalTransformerEncoderLayer(args) for i in range(args.text_encoder_layers)
+            CausalTransformerEncoderLayer(args, delay=delay) for i in range(args.text_encoder_layers)
         ])
 
     def forward(
@@ -521,41 +522,42 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         blank = self.src_dict.bos()
         pad = self.src_dict.pad()
 
-        B, S, C = logits.size()
-        if speech_padding_mask is not None:
-            # replace paddings' logits s.t. they predict pads
-            one_hot = F.one_hot(torch.LongTensor([pad]), C).type_as(logits)
-            logits[speech_padding_mask] = one_hot
+        with torch.no_grad():
+            B, S, C = logits.size()
+            if speech_padding_mask is not None:
+                # replace paddings' logits s.t. they predict pads
+                one_hot = F.one_hot(torch.LongTensor([pad]), C).type_as(logits)
+                logits[speech_padding_mask] = one_hot
 
-        # predict CTC tokens
-        ctc_pred = logits.argmax(-1)
-        # previos predictions
-        pre_pred = torch.cat(
-            (
-                ctc_pred[:, :1],  # dup first
-                ctc_pred[:, :-1],
-            ), dim=1
-        )
-        # boundary condition & aggregate to segment id
-        segment_ids = ((pre_pred != blank) & (ctc_pred != pre_pred)) | (
-            (ctc_pred == pad) & (ctc_pred != pre_pred))
-        segment_ids = segment_ids.cumsum(dim=1)
-        # prepare attn matrix with max len
-        shrink_lengths = segment_ids.max(dim=1)[0] + 1
-        neg_inf = -torch.finfo(logits.dtype).max
-        attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
-        # compute non-blank confidence
-        confidence = 1 - logits.softmax(-1)[..., blank]
-        # compute attn to shrink speech states
-        attn_weights.scatter_(
-            1,
-            segment_ids.unsqueeze(1),
-            confidence.unsqueeze(1)
-        )
-        attn_weights = utils.softmax(
-            attn_weights, dim=-1
-        ).type_as(speech_states)
-        attn_weights = self.dropout_module(attn_weights)
+            # predict CTC tokens
+            ctc_pred = logits.argmax(-1)
+            # previos predictions
+            pre_pred = torch.cat(
+                (
+                    ctc_pred[:, :1],  # dup first
+                    ctc_pred[:, :-1],
+                ), dim=1
+            )
+            # boundary condition & aggregate to segment id
+            segment_ids = ((pre_pred != blank) & (ctc_pred != pre_pred)) | (
+                (ctc_pred == pad) & (ctc_pred != pre_pred))
+            segment_ids = segment_ids.cumsum(dim=1)
+            # prepare attn matrix with max len
+            shrink_lengths = segment_ids.max(dim=1)[0] + 1
+            neg_inf = -torch.finfo(logits.dtype).max
+            attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
+            # compute non-blank confidence
+            confidence = 1 - logits.softmax(-1)[..., blank]
+            # compute attn to shrink speech states
+            attn_weights.scatter_(
+                1,
+                segment_ids.unsqueeze(1),
+                confidence.unsqueeze(1)
+            )
+            attn_weights = utils.softmax(
+                attn_weights, dim=-1
+            ).type_as(speech_states)
+            attn_weights = self.dropout_module(attn_weights)
 
         # shrink speech states
         # (B, S', S) x (B, S, D) -> (B, S', D) -> (S', B, D)

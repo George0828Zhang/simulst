@@ -48,7 +48,7 @@ def inject_noise(prev_output_tokens, dictionary, ratio=-1, uniform=False):
     return target_tokens, target_tokens.eq(pad)
 
 
-def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, collapse=True, **unused):
+def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, blank_penalty=0, collapse=True, **unused):
     """
     lprobs is expected to be batch first. (from model forward output, or net_output)
     """
@@ -59,9 +59,8 @@ def generate(model, src_tokens, src_lengths, net_output=None, blank_idx=0, colla
         net_output, log_probs=True
     )
 
-    # eos_penalty = 1
-    # if eos_penalty > 0.0:
-    #     lprobs[:, :, blank_idx] -= eos_penalty
+    if blank_penalty > 0.0:
+        lprobs[:, :, blank_idx] -= blank_penalty
 
     # get subsampling padding mask & lengths
     if net_output[1]["padding_mask"] is not None:
