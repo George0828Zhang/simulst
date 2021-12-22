@@ -167,7 +167,7 @@ class S2TSeq2SeqModel(S2TTransformerModel):
 def s2t_seq2seq_s(args):
     args.share_decoder_input_output_embed = True
 
-    args.mtl_layer_id = getattr(args, "mtl_layer_id", 5)
+    args.mtl_layer_id = getattr(args, "mtl_layer_id", 7)
 
     s2t_speech_encoder_s(args)
     s2t_transformer_s(args)

@@ -88,7 +88,7 @@ class LabelSmoothedMTLCriterion(LabelSmoothedCTCCriterion):
         # combine
         loss = (1 - self.asr_factor) * ce_loss + self.asr_factor * asr_loss
 
-        if self.report_sinkhorn_dist:
+        if self.report_sinkhorn_dist and len(encoder_out["attn"]) > 0:
             with torch.no_grad():
                 attn = encoder_out["attn"][0].float()
                 cost = -encoder_out["log_alpha"][0].float()

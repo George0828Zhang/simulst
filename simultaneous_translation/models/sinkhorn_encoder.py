@@ -29,12 +29,9 @@ from fairseq.modules import (
     PositionalEmbedding,
     TransformerDecoderLayer
 )
+from fairseq.modules.fairseq_dropout import FairseqDropout
 
 # user
-# from simultaneous_translation.models.speech_encoder import (
-#     CausalSpeechEncoderModel,
-#     CausalSpeechEncoder
-# )
 from simultaneous_translation.models.seq2seq import (
     S2TSeq2SeqModel,
     s2t_seq2seq_s
@@ -144,6 +141,21 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
             ),
         )
         parser.add_argument(
+            "--mask-schedule-updates",
+            type=int,
+            help=(
+                'use linear scheduling until this many updates to ramp up'
+                ' the mask ratio from 0 to --mask-ratio.'
+            ),
+        )
+        # parser.add_argument(
+        #     "--causal-rate",
+        #     type=float,
+        #     help=(
+        #         'probability to only train causal encoder. helps with learning of local reordering'
+        #     ),
+        # )
+        parser.add_argument(
             "--load-pretrained-cascade-from",
             type=str,
             metavar="STR",
@@ -157,7 +169,8 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
             S2TSeq2SeqModel.build_encoder(
                 args, task, encoder_embed_tokens, ctc_projection),
             CTCWeightedShrink(
-                args, task.source_dictionary)
+                args, task.source_dictionary
+            ) if args.do_weighted_shrink else FixedShrink(args)
         ])
         # load weights from pure ctc first
         if getattr(args, "load_pretrained_cascade_from", None):
@@ -281,6 +294,10 @@ class S2TSinkhornModel(S2TSeq2SeqModel):
         })
         return logits, decoder_out
 
+    def set_num_updates(self, num_updates):
+        super().set_num_updates(num_updates)
+        self.num_updates = num_updates
+
     def generate(self, src_tokens, src_lengths, blank_idx=0, from_encoder=False, **unused):
         logits, extra = self.forward_causal(src_tokens, src_lengths, None)
         return generate(self, src_tokens, src_lengths, net_output=(logits, extra), blank_idx=blank_idx)
@@ -355,9 +372,9 @@ class CascadeEncoders(FairseqEncoder):
     def reorder_encoder_out(self, encoder_out, new_order):
         return self.encoders[0].reorder_encoder_out(encoder_out, new_order)
 
-    # def set_num_updates(self, num_updates):
-    #     super().set_num_updates(num_updates)
-    #     self.num_updates = num_updates
+    def set_num_updates(self, num_updates):
+        super().set_num_updates(num_updates)
+        self.num_updates = num_updates
 
     # def load_state_dict(self, state_dict, strict=True):
     #     """
@@ -460,46 +477,51 @@ class CTCWeightedShrink(FixedShrink):
     def __init__(self, args, src_dict):
         super().__init__(args)
         self.src_dict = src_dict
+        # self.dropout_module = FairseqDropout(
+        #     args.dropout, module_name=self.__class__.__name__
+        # )
 
     def shrinking_op(self, speech_states, logits, speech_padding_mask=None):
         blank = self.src_dict.bos()
         pad = self.src_dict.pad()
 
-        B, S, C = logits.size()
-        if speech_padding_mask is not None:
-            # replace paddings' logits s.t. they predict pads
-            one_hot = F.one_hot(torch.LongTensor([pad]), C).type_as(logits)
-            logits[speech_padding_mask] = one_hot
+        with torch.no_grad():
+            B, S, C = logits.size()
+            logits = logits.float()  # use fp32 for shrinking
+            if speech_padding_mask is not None:
+                # replace paddings' logits s.t. they predict pads
+                one_hot = F.one_hot(torch.LongTensor([pad]), C).type_as(logits)
+                logits[speech_padding_mask] = one_hot
 
-        # predict CTC tokens
-        ctc_pred = logits.argmax(-1)
-        # previos predictions
-        pre_pred = torch.cat(
-            (
-                ctc_pred[:, :1],  # dup first
-                ctc_pred[:, :-1],
-            ), dim=1
-        )
-        # boundary condition & aggregate to segment id
-        segment_ids = ((pre_pred != blank) & (ctc_pred != pre_pred)) | (
-            (ctc_pred == pad) & (ctc_pred != pre_pred))
-        segment_ids = segment_ids.cumsum(dim=1)
-        # prepare attn matrix with max len
-        shrink_lengths = segment_ids.max(dim=1)[0] + 1
-        neg_inf = -1e8 if logits.dtype == torch.float32 else -1e4  # -torch.finfo(logits.dtype).max
-        attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
-        # compute non-blank confidence
-        confidence = 1 - logits.softmax(-1)[..., blank]
-        # compute attn to shrink speech states
-        attn_weights.scatter_(
-            1,
-            segment_ids.unsqueeze(1),
-            confidence.unsqueeze(1)
-        )
-        attn_weights = utils.softmax(
-            attn_weights, dim=-1
-        ).type_as(speech_states)
-        # attn_weights = self.dropout_module(attn_weights)
+            # predict CTC tokens
+            ctc_pred = logits.argmax(-1)
+            # previos predictions
+            pre_pred = torch.cat(
+                (
+                    ctc_pred[:, :1],  # dup first
+                    ctc_pred[:, :-1],
+                ), dim=1
+            )
+            # boundary condition & aggregate to segment id
+            segment_ids = ((pre_pred != blank) & (ctc_pred != pre_pred)) | (
+                (ctc_pred == pad) & (ctc_pred != pre_pred))
+            segment_ids = segment_ids.cumsum(dim=1)
+            # prepare attn matrix with max len
+            shrink_lengths = segment_ids.max(dim=1)[0] + 1
+            neg_inf = -1e8 if logits.dtype == torch.float32 else -1e4  # -torch.finfo(logits.dtype).max
+            attn_weights = logits.new_full((B, shrink_lengths.max(), S), neg_inf)
+            # compute non-blank confidence
+            confidence = 1 - logits.softmax(-1)[..., blank]
+            # compute attn to shrink speech states
+            attn_weights.scatter_(
+                1,
+                segment_ids.unsqueeze(1),
+                confidence.unsqueeze(1)
+            )
+            attn_weights = utils.softmax(
+                attn_weights, dim=-1
+            ).type_as(speech_states)
+            # attn_weights = self.dropout_module(attn_weights)
 
         # shrink speech states
         # (B, S', S) x (B, S, D) -> (B, S', D) -> (S', B, D)
@@ -520,7 +542,7 @@ class CTCWeightedShrink(FixedShrink):
             if real_shrink_lengths.max() < shrink_lengths.max():
                 shrink_lengths = real_shrink_lengths
                 shrinked_states = shrinked_states[:shrink_lengths.max(), ...]
-            del segment_ids
+            # del segment_ids
 
         return shrinked_states, shrink_lengths
 
@@ -557,7 +579,8 @@ class AuxiliarySortingNetwork(nn.Module):
         #         args.encoder_embed_dim, args.encoder_embed_dim * self.upsample_ratio)
 
         # below are for input target feeding
-        if args.mask_ratio == 1.0:
+        self.mask_schedule_updates = args.mask_schedule_updates
+        if args.mask_ratio == 1.0 and args.mask_schedule_updates <= 1:
             logger.info("No context provided to ASN.")
         self.mask_ratio = args.mask_ratio
         self.mask_uniform = args.mask_uniform
@@ -602,23 +625,36 @@ class AuxiliarySortingNetwork(nn.Module):
     #     ).view(-1, B, C)
     #     return x, encoder_padding_mask
 
+    def set_num_updates(self, num_updates):
+        # super().set_num_updates(num_updates)
+        self.num_updates = num_updates
+
     def forward(self, causal_out, causal=False):
         """ Added forwards for non-causal and sinkhorn attention """
         # causal outputs
         causal_states = x = causal_out["encoder_out"][0]
         encoder_padding_mask = causal_out["encoder_padding_mask"][0] \
             if len(causal_out["encoder_padding_mask"]) > 0 else None
-        encoder_states = causal_out["encoder_states"]
         prev_output_tokens = causal_out["prev_output_tokens"]
 
+        if causal:
+            causal_out.update({
+                "attn": [],
+                "log_alpha": [],
+                # "causal_out": [causal_states],
+            })
+            return causal_out
+
+        mask_ratio = self.mask_ratio * min(self.num_updates / self.mask_schedule_updates, 1.)
+
         # target feeding (noise + pos emb)
-        if self.mask_ratio == 1.:
+        if self.mask_ratio == 1. and self.mask_schedule_updates <= 1:
             prev_states = prev_padding_mask = None
         else:
             prev_tokens, prev_padding_mask = inject_noise(
                 prev_output_tokens,
                 self.tgt_dict,
-                ratio=self.mask_ratio if self.training else 0,
+                ratio=mask_ratio if self.training else 0,
                 uniform=self.mask_uniform,
             )
 
@@ -656,7 +692,6 @@ class AuxiliarySortingNetwork(nn.Module):
         causal_out.update({
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_states": encoder_states,
             "attn": [attn],
             "log_alpha": [log_alpha],
             "causal_out": [causal_states],
@@ -676,6 +711,8 @@ def s2t_sinkhorn_s(args):
     args.sinkhorn_bucket_size = getattr(args, "sinkhorn_bucket_size", 1)
     args.sinkhorn_energy = getattr(args, "sinkhorn_energy", "dot")
     args.mask_ratio = getattr(args, "mask_ratio", 0.5)
+    args.mask_schedule_updates = getattr(args, "mask_schedule_updates", 1)  # 10000
+    # args.causal_rate = getattr(args, "causal_rate", 0)  # 0.3
 
     s2t_seq2seq_s(args)
 
@@ -693,5 +730,7 @@ def s2t_causal_encoder_s(args):
     args.mask_ratio = 1
     args.mask_uniform = False
     # args.upsample_ratio = 1
+    args.mask_schedule_updates = 1
+    args.causal_rate = 1
 
     s2t_seq2seq_s(args)
