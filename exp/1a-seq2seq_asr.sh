@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-TASK=ctc_asr
+TASK=seq2seq_asr
 . ./data_path.sh
-DATA=${DATA_ROOT}/joint
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --config-yaml config_asr.yaml \
-    --train-subset train_de_asr,train_es_asr,train_fr_asr,train_it_asr,train_nl_asr,train_pt_asr,train_ro_asr,train_ru_asr \
-    --valid-subset dev_de_asr,dev_es_asr \
+    --config-yaml config_st.yaml \
+    --train-subset train_st \
+    --valid-subset dev_st \
     --skip-invalid-size-inputs-valid-test \
     --max-tokens 80000 \
     --update-freq 4 \
     --task speech_to_text_infer --do-asr \
     --inference-config-yaml infer_asr.yaml \
-    --arch speech_encoder_s \
-    --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
-    --clip-norm 10.0 \
-    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
-    --warmup-updates 10000 \
+    --arch s2t_transformer_convpos_s --share-decoder-input-output-embed \
+    --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
+    --criterion label_smoothed_cross_entropy --label-smoothing 0.1 --report-accuracy \
+    --clip-norm 2 --weight-decay 1e-4 \
+    --optimizer adam --adam-betas '(0.9, 0.98)' --lr 5e-4 --lr-scheduler inverse_sqrt \
+    --warmup-updates 4000 --warmup-init-lr 1e-7 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \

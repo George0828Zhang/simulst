@@ -130,7 +130,6 @@ data-bin/
 .vscode/settings.json
 
 # Experimental Folder
-DATA/mustc
 checkpoints/
 logdir/
 fairseq

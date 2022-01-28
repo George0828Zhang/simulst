@@ -21,6 +21,28 @@ from .waitk_sequence_generator import WaitkSequenceGenerator
 EVAL_BLEU_ORDER = 4
 
 
+def move_eos_to_begin(
+    tokens: torch.Tensor,
+    lengths: torch.Tensor,
+    pad: int = 1,
+    eos: int = 2
+) -> torch.Tensor:
+    """ moves eos to the begining """
+
+    N, T = tokens.shape[:2]
+    prev_output_tokens = tokens.clone()
+
+    lengths = (lengths - 1).unsqueeze(1)
+    prev_output_tokens.scatter_(1, lengths - 1, pad)
+    prev_output_tokens = torch.cat(
+        (
+            prev_output_tokens.new_full((N, 1), eos),
+            prev_output_tokens[:, :-1]
+        ), dim=1
+    )
+    return prev_output_tokens
+
+
 @register_task("speech_to_text_infer")
 class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
     @classmethod
@@ -97,11 +119,20 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
         if self.do_asr:
             sample["target"] = sample['net_input']['src_txt_tokens']
             sample["target_lengths"] = sample['net_input']['src_txt_lengths']
-            # sample["ntokens"]
+
             del sample["net_input"]['src_txt_tokens']
             del sample["net_input"]['src_txt_lengths']
-            # CTC asr does not need prev_output_tokens
-            del sample["net_input"]['prev_output_tokens']
+
+            sample["net_input"]['prev_output_tokens'] = move_eos_to_begin(
+                sample["target"],
+                sample["target_lengths"],
+                self.src_dict.pad(),
+                self.src_dict.eos()
+            )
+
+        if 'alignment' in sample["net_input"]:
+            # dont need
+            del sample["net_input"]['alignment']
 
         return sample
 

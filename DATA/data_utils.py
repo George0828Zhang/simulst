@@ -83,7 +83,7 @@ def extract_fbank_features(
     _waveform, _ = convert_waveform(waveform, sample_rate, to_mono=True)
     # Kaldi compliance: 16-bit signed integers
     _waveform = _waveform * (2 ** 15)
-    _waveform = _waveform.numpy()
+    _waveform = _waveform[0].numpy()
 
     features = _get_kaldi_fbank(_waveform, sample_rate, n_mel_bins)
     if features is None:
@@ -100,6 +100,7 @@ def extract_fbank_features(
 
 def create_zip(data_root: Path, zip_path: Path):
     paths = list(data_root.glob("*.npy"))
+    paths.extend(data_root.glob("*.flac"))
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as f:
         for path in tqdm(paths):
             f.write(path, arcname=path.name)
@@ -178,14 +179,20 @@ def gen_config_yaml(
     if sampling_alpha is not None:
         writer.set_sampling_alpha(sampling_alpha)
 
-    if cmvn_type not in ["global", "utterance"]:
+    if cmvn_type not in ["global", "utterance", "none"]:
         raise NotImplementedError
 
-    if specaugment_policy is not None:
-        writer.set_feature_transforms(
-            "_train", [f"{cmvn_type}_cmvn", "specaugment"]
-        )
-    writer.set_feature_transforms("*", [f"{cmvn_type}_cmvn"])
+    if cmvn_type == "none":
+        if specaugment_policy is not None:
+            writer.set_feature_transforms(
+                "_train", ["specaugment"]
+            )
+    else:
+        if specaugment_policy is not None:
+            writer.set_feature_transforms(
+                "_train", [f"{cmvn_type}_cmvn", "specaugment"]
+            )
+        writer.set_feature_transforms("*", [f"{cmvn_type}_cmvn"])
 
     if cmvn_type == "global":
         if gcmvn_path is None:

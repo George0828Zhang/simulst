@@ -15,7 +15,7 @@ from fairseq.criterions import (
 )
 import logging
 
-from simultaneous_translation.criterion.label_smoothed_ctc_criterion import (
+from .label_smoothed_ctc_criterion import (
     calc_recall_precision,
     LabelSmoothedCTCCriterionConfig,
     LabelSmoothedCTCCriterion

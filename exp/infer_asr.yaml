@@ -1,2 +1,7 @@
 eval_wer: true
-print_samples: false # phoneme, hard to understance...
+generation_args:
+  beam: 5
+  max_len_a: 0.1
+  max_len_b: 10
+post_process: sentencepiece
+print_samples: true
