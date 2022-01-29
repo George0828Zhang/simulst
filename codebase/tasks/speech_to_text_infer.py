@@ -32,7 +32,7 @@ def move_eos_to_begin(
     N, T = tokens.shape[:2]
     prev_output_tokens = tokens.clone()
 
-    lengths = (lengths - 1).unsqueeze(1)
+    lengths = lengths.unsqueeze(1)
     prev_output_tokens.scatter_(1, lengths - 1, pad)
     prev_output_tokens = torch.cat(
         (
