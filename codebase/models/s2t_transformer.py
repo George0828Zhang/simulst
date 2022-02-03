@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-
+import math
+import torch.nn as nn
 import logging
 from pathlib import Path
 from fairseq import checkpoint_utils
 from fairseq.data.data_utils import lengths_to_padding_mask
-
-logger = logging.getLogger(__name__)
-
+from fairseq.modules import (
+    SamePad
+)
 from fairseq.models import (
     register_model,
     register_model_architecture,
@@ -16,9 +17,9 @@ from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerModel,
     s2t_transformer_s
 )
-from fairseq.models.wav2vec.wav2vec2 import (
-    make_conv_pos
-)
+from .causal_conv import CausalConv1d
+
+logger = logging.getLogger(__name__)
 
 
 @register_model("s2t_transformer_convpos")
@@ -107,6 +108,49 @@ class S2TTransformerConvPosEncoder(S2TTransformerEncoder):
             "src_tokens": [],
             "src_lengths": [],
         }
+
+
+# positional convolution
+def make_conv_pos(embed_dim, kernel_size, groups, causal=False):
+    def init(pos_conv, dropout=0):
+        std = math.sqrt((4 * (1.0 - dropout)) / (kernel_size * embed_dim))
+        nn.init.normal_(pos_conv.weight, mean=0, std=std)
+        nn.init.constant_(pos_conv.bias, 0)
+
+        pos_conv = nn.utils.weight_norm(pos_conv, name="weight", dim=2)
+        return pos_conv
+
+    class ConvPosWrapper(nn.Module):
+        def __init__(self, conv, *others):
+            super().__init__()
+            self.conv = init(conv)
+            self.others = nn.ModuleList(others)
+
+        def forward(self, x, incremental_state=None):
+            x = self.conv(x, incremental_state)
+            for m in self.others:
+                x = m(x)
+            return x
+
+    if causal:
+        pos_conv = CausalConv1d(
+            embed_dim,
+            embed_dim,
+            kernel_size=(kernel_size + 1) // 2,  # left only + self
+            groups=groups,
+        )
+        return ConvPosWrapper(
+            pos_conv, nn.GELU())
+    else:
+        pos_conv = nn.Conv1d(
+            embed_dim,
+            embed_dim,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=groups,
+        )
+        return nn.Sequential(
+            pos_conv, SamePad(kernel_size), nn.GELU())
 
 
 @register_model_architecture("s2t_transformer_convpos", "s2t_transformer_convpos_s")
