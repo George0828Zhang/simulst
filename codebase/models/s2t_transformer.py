@@ -123,7 +123,7 @@ def make_conv_pos(embed_dim, kernel_size, groups, causal=False):
     class ConvPosWrapper(nn.Module):
         def __init__(self, conv, *others):
             super().__init__()
-            self.conv = init(conv)
+            self.conv = conv
             self.others = nn.ModuleList(others)
 
         def forward(self, x, incremental_state=None):
@@ -140,7 +140,7 @@ def make_conv_pos(embed_dim, kernel_size, groups, causal=False):
             groups=groups,
         )
         return ConvPosWrapper(
-            pos_conv, nn.GELU())
+            init(pos_conv), nn.GELU())
     else:
         pos_conv = nn.Conv1d(
             embed_dim,
@@ -150,7 +150,7 @@ def make_conv_pos(embed_dim, kernel_size, groups, causal=False):
             groups=groups,
         )
         return nn.Sequential(
-            pos_conv, SamePad(kernel_size), nn.GELU())
+            init(pos_conv), SamePad(kernel_size), nn.GELU())
 
 
 @register_model_architecture("s2t_transformer_convpos", "s2t_transformer_convpos_s")

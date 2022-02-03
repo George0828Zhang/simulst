@@ -68,14 +68,17 @@ class S2TEmformerEncoder(FairseqEncoder):
             ffn_dim=args.encoder_ffn_embed_dim,
             num_layers=args.encoder_layers,
             dropout=args.dropout,
-            activation=args.activation_fn,
+            attention_dropout=args.attention_dropout,
+            activation_dropout=args.activation_dropout,
+            activation='gelu',  # args.activation_fn,
             left_context_length=self.left_context,
             right_context_length=self.right_context,
             segment_length=self.segment_length,
             max_memory_size=args.max_memory_size,
-            tanh_on_mem=True,
+            tanh_on_mem=False,
             negative_inf=-1e4 if args.fp16 else -1e8,
-            # weight_init_scale_strategy: str = 'depthwise'
+            weight_init_scale_strategy='depthwise',
+            normalize_before=args.encoder_normalize_before
         )
 
     def conv_layer_stride(self):

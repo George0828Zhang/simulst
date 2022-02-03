@@ -2,6 +2,7 @@ import math
 from typing import List, Optional, Tuple
 
 import torch
+from fairseq.modules import LayerNorm
 
 
 __all__ = ["Emformer"]
@@ -171,14 +172,14 @@ class _EmformerAttention(torch.nn.Module):
                 [
                     key[: mems.size(0) + right_context_blocks_length],
                     left_context_key,
-                    key[mems.size(0) + right_context_blocks_length :],
+                    key[mems.size(0) + right_context_blocks_length:],
                 ],
             )
             value = torch.cat(
                 [
                     value[: mems.size(0) + right_context_blocks_length],
                     left_context_val,
-                    value[mems.size(0) + right_context_blocks_length :],
+                    value[mems.size(0) + right_context_blocks_length:],
                 ],
             )
 
@@ -209,7 +210,7 @@ class _EmformerAttention(torch.nn.Module):
 
         summary_length = summary.size(0)
         output_right_context = output_right_context_mems[: T - summary_length]
-        output_mems = output_right_context_mems[T - summary_length :]
+        output_mems = output_right_context_mems[T - summary_length:]
         if self.tanh_on_mem:
             output_mems = torch.tanh(output_mems)
         else:
@@ -312,8 +313,8 @@ class _EmformerAttention(torch.nn.Module):
         return (
             output,
             output_mems,
-            key[mems.size(0) + right_context.size(0) :],
-            value[mems.size(0) + right_context.size(0) :],
+            key[mems.size(0) + right_context.size(0):],
+            value[mems.size(0) + right_context.size(0):],
         )
 
 
@@ -342,6 +343,8 @@ class _EmformerLayer(torch.nn.Module):
         num_heads: int,
         ffn_dim: int,
         dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        activation_dropout: float = 0.0,
         activation: str = "relu",
         left_context_length: int = 0,
         segment_length: int = 128,
@@ -349,13 +352,14 @@ class _EmformerLayer(torch.nn.Module):
         weight_init_gain: Optional[float] = None,
         tanh_on_mem: bool = False,
         negative_inf: float = -1e8,
+        normalize_before: bool = True
     ):
         super().__init__()
 
         self.attention = _EmformerAttention(
             input_dim=input_dim,
             num_heads=num_heads,
-            dropout=dropout,
+            dropout=attention_dropout,
             weight_init_gain=weight_init_gain,
             tanh_on_mem=tanh_on_mem,
             negative_inf=negative_inf,
@@ -365,15 +369,23 @@ class _EmformerLayer(torch.nn.Module):
 
         activation_module = _get_activation_module(activation)
         self.pos_ff = torch.nn.Sequential(
-            torch.nn.LayerNorm(input_dim),
+            LayerNorm(input_dim),
             torch.nn.Linear(input_dim, ffn_dim),
             activation_module,
-            torch.nn.Dropout(dropout),
+            torch.nn.Dropout(activation_dropout),
             torch.nn.Linear(ffn_dim, input_dim),
             torch.nn.Dropout(dropout),
         )
-        self.layer_norm_input = torch.nn.LayerNorm(input_dim)
-        self.layer_norm_output = torch.nn.LayerNorm(input_dim)
+
+        def init_linear(m):
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight, gain=weight_init_gain)
+
+        if weight_init_gain:
+            self.pos_ff.apply(init_linear)
+
+        self.layer_norm_input = LayerNorm(input_dim) if normalize_before else None
+        self.layer_norm_output = LayerNorm(input_dim) if not normalize_before else None
 
         self.left_context_length = left_context_length
         self.segment_length = segment_length
@@ -395,9 +407,9 @@ class _EmformerLayer(torch.nn.Module):
         past_length = state[3][0][0].item()
         past_left_context_length = min(self.left_context_length, past_length)
         past_mem_length = min(self.max_memory_size, math.ceil(past_length / self.segment_length))
-        pre_mems = state[0][self.max_memory_size - past_mem_length :]
-        lc_key = state[1][self.left_context_length - past_left_context_length :]
-        lc_val = state[2][self.left_context_length - past_left_context_length :]
+        pre_mems = state[0][self.max_memory_size - past_mem_length:]
+        lc_key = state[1][self.left_context_length - past_left_context_length:]
+        lc_val = state[2][self.left_context_length - past_left_context_length:]
         return pre_mems, lc_key, lc_val
 
     def _pack_state(
@@ -410,9 +422,9 @@ class _EmformerLayer(torch.nn.Module):
     ) -> List[torch.Tensor]:
         new_k = torch.cat([state[1], next_k])
         new_v = torch.cat([state[2], next_v])
-        state[0] = torch.cat([state[0], mems])[-self.max_memory_size :]
-        state[1] = new_k[new_k.shape[0] - self.left_context_length :]
-        state[2] = new_v[new_v.shape[0] - self.left_context_length :]
+        state[0] = torch.cat([state[0], mems])[-self.max_memory_size:]
+        state[1] = new_k[new_k.shape[0] - self.left_context_length:]
+        state[2] = new_v[new_v.shape[0] - self.left_context_length:]
         state[3] = state[3] + update_length
         return state
 
@@ -424,15 +436,18 @@ class _EmformerLayer(torch.nn.Module):
     ) -> torch.Tensor:
         result = self.dropout(rc_output) + torch.cat([right_context, utterance])
         result = self.pos_ff(result) + result
-        result = self.layer_norm_output(result)
+        if self.layer_norm_output is not None:
+            result = self.layer_norm_output(result)
         return result
 
     def _apply_pre_attention_layer_norm(
         self, utterance: torch.Tensor, right_context: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        layer_norm_input = self.layer_norm_input(torch.cat([right_context, utterance]))
+        layer_norm_input = torch.cat([right_context, utterance])
+        if self.layer_norm_input is not None:
+            layer_norm_input = self.layer_norm_input(layer_norm_input)
         return (
-            layer_norm_input[right_context.size(0) :],
+            layer_norm_input[right_context.size(0):],
             layer_norm_input[: right_context.size(0)],
         )
 
@@ -440,7 +455,7 @@ class _EmformerLayer(torch.nn.Module):
         self, rc_output: torch.Tensor, utterance: torch.Tensor, right_context: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         rc_output = self._process_attention_output(rc_output, utterance, right_context)
-        return rc_output[right_context.size(0) :], rc_output[: right_context.size(0)]
+        return rc_output[right_context.size(0):], rc_output[: right_context.size(0)]
 
     def _apply_attention_forward(
         self,
@@ -628,6 +643,8 @@ class Emformer(torch.nn.Module):
         ffn_dim: int,
         num_layers: int,
         dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        activation_dropout: float = 0.0,
         activation: str = "relu",
         left_context_length: int = 0,
         right_context_length: int = 0,
@@ -636,6 +653,7 @@ class Emformer(torch.nn.Module):
         weight_init_scale_strategy: str = "depthwise",
         tanh_on_mem: bool = False,
         negative_inf: float = -1e8,
+        normalize_before: bool = True
     ):
         super().__init__()
 
@@ -654,6 +672,8 @@ class Emformer(torch.nn.Module):
                     num_heads,
                     ffn_dim,
                     dropout=dropout,
+                    attention_dropout=attention_dropout,
+                    activation_dropout=activation_dropout,
                     activation=activation,
                     left_context_length=left_context_length,
                     segment_length=segment_length,
@@ -661,10 +681,16 @@ class Emformer(torch.nn.Module):
                     weight_init_gain=weight_init_gains[layer_idx],
                     tanh_on_mem=tanh_on_mem,
                     negative_inf=negative_inf,
+                    normalize_before=normalize_before,
                 )
                 for layer_idx in range(num_layers)
             ]
         )
+
+        if normalize_before:
+            self.final_layer_norm = LayerNorm(input_dim)
+        else:
+            self.final_layer_norm = None
 
         self.left_context_length = left_context_length
         self.right_context_length = right_context_length
@@ -679,7 +705,7 @@ class Emformer(torch.nn.Module):
             start = (seg_idx + 1) * self.segment_length
             end = start + self.right_context_length
             right_context_blocks.append(input[start:end])
-        right_context_blocks.append(input[T - self.right_context_length :])
+        right_context_blocks.append(input[T - self.right_context_length:])
         return torch.cat(right_context_blocks)
 
     def _gen_attention_mask_col_widths(self, seg_idx: int, utterance_length: int) -> List[int]:
@@ -799,6 +825,8 @@ class Emformer(torch.nn.Module):
         output = utterance
         for layer in self.emformer_layers:
             output, right_context, mems = layer(output, lengths, right_context, mems, attention_mask)
+        if self.final_layer_norm is not None:
+            output = self.final_layer_norm(output)
         return output.permute(1, 0, 2), lengths
 
     @torch.jit.export
@@ -854,5 +882,6 @@ class Emformer(torch.nn.Module):
                 mems,
             )
             output_states.append(output_state)
-
+        if self.final_layer_norm is not None:
+            output = self.final_layer_norm(output)
         return output.permute(1, 0, 2), output_lengths, output_states
