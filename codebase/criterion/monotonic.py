@@ -121,15 +121,32 @@ def ssnt_loss(
     source_lengths: Tensor,
     target_lengths: Tensor,
     neg_inf: float = -1e4,
-    reduction="mean",
+    reduction="none",
 ):
-    """
-    Very similar to monotonic attention, except taking translation probability
-    into account: p(y_j | h_i, s_j)
-    log_probs: bsz, tgt_len, src_len, vocab
-    targets: bsz, tgt_len
-    p_choose: bsz, tgt_len, src_len
-    padding_mask: bsz, src_len
+    """The SNNT loss is very similar to monotonic attention,
+    except taking word prediction probability p(y_j | h_i, s_j)
+    into account.
+
+    Args:
+        log_probs (Tensor): Word prediction log-probs, should be output of log_softmax.
+            tensor with shape (N, T, S, V)
+            where N is the minibatch size, T is the maximum number of
+            output labels, S is the maximum number of input frames and V is
+            the vocabulary of labels.
+        targets (Tensor): Tensor with shape (N, T) representing the
+            reference target labels for all samples in the minibatch.
+        log_p_choose (Tensor): emission log-probs, should be output of F.logsigmoid.
+            tensor with shape (N, T, S)
+            where N is the minibatch size, T is the maximum number of
+            output labels, S is the maximum number of input frames.
+        source_lengths (Tensor): Tensor with shape (N,) representing the
+            number of frames for each sample in the minibatch.
+        target_lengths (Tensor): Tensor with shape (N,) representing the
+            length of the transcription for each sample in the minibatch.
+        neg_inf (float, optional): The constant representing -inf used for masking.
+            Default: -1e4
+        reduction (string, optional): Specifies reduction. suppoerts mean / sum.
+            Default: None.
     """
     prob_check(log_probs, neg_inf=neg_inf, logp=True)
     prob_check(log_p_choose, neg_inf=neg_inf, logp=True)
@@ -208,11 +225,38 @@ def ssnt_loss_mem(
     neg_inf: float = -1e4,
     reduction="mean",
 ):
-    """
-    Memory efficient
-    log_probs: tgt_len_flat, src_len, vocab
-    targets: tgt_len_flat,
-    p_choose: tgt_len_flat, src_len
+    """The memory efficient implementation concatenates along the targets
+    dimension to reduce wasted computation on padding positions.
+
+    Assuming the summation of all targets in the batch is T_flat, then
+    the original B x T x ... tensor is reduced to T_flat x ...
+
+    The input tensors can be obtained by using target mask:
+    Example:
+        >>> target_mask = targets.ne(pad)   # (B, T)
+        >>> targets = targets[target_mask]  # (T_flat,)
+        >>> log_probs = log_probs[target_mask]  # (T_flat, S, V)
+
+    Args:
+        log_probs (Tensor): Word prediction log-probs, should be output of log_softmax.
+            tensor with shape (T_flat, S, V)
+            where T_flat is the summation of all target lengths,
+            S is the maximum number of input frames and V is
+            the vocabulary of labels.
+        targets (Tensor): Tensor with shape (T_flat,) representing the
+            reference target labels for all samples in the minibatch.
+        log_p_choose (Tensor): emission log-probs, should be output of F.logsigmoid.
+            tensor with shape (T_flat, S)
+            where T_flat is the summation of all target lengths,
+            S is the maximum number of input frames.
+        source_lengths (Tensor): Tensor with shape (N,) representing the
+            number of frames for each sample in the minibatch.
+        target_lengths (Tensor): Tensor with shape (N,) representing the
+            length of the transcription for each sample in the minibatch.
+        neg_inf (float, optional): The constant representing -inf used for masking.
+            Default: -1e4
+        reduction (string, optional): Specifies reduction. suppoerts mean / sum.
+            Default: None.
     """
     prob_check(log_probs, neg_inf=neg_inf, logp=True)
     prob_check(log_p_choose, neg_inf=neg_inf, logp=True)

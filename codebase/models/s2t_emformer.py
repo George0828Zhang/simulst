@@ -75,7 +75,7 @@ class S2TEmformerEncoder(FairseqEncoder):
             right_context_length=self.right_context,
             segment_length=self.segment_length,
             max_memory_size=args.max_memory_size,
-            tanh_on_mem=False,
+            tanh_on_mem=args.tanh_on_mem,
             negative_inf=-1e4 if args.fp16 else -1e8,
             weight_init_scale_strategy='depthwise',
             normalize_before=args.encoder_normalize_before
@@ -184,8 +184,12 @@ class S2TEmformerModel(S2TTransformerModel):
         parser.add_argument(
             "--max-memory-size",
             type=int,
-            default=-1,
             help="Right context for the segment.",
+        )
+        parser.add_argument(
+            "--tanh-on-mem",
+            action="store_true",
+            help="whether to use tanh for memory bank vectors.",
         )
 
     @classmethod
@@ -196,7 +200,10 @@ class S2TEmformerModel(S2TTransformerModel):
             encoder = checkpoint_utils.load_pretrained_component_from_model(
                 component=encoder, checkpoint=args.load_pretrained_encoder_from
             )
-
+            logger.info(
+                f"loaded pretrained encoder from: "
+                f"{args.load_pretrained_encoder_from}"
+            )
         return encoder
 
 
@@ -209,8 +216,8 @@ def s2t_emformer_s(args):
     args.conv_pos_groups = getattr(args, "conv_pos_groups", 16)
     # emformer
     args.segment_length = getattr(args, "segment_length", 64)
-    args.segment_left_context = getattr(args, "segment_left_context", 32)
+    args.segment_left_context = getattr(args, "segment_left_context", 128)
     args.segment_right_context = getattr(args, "segment_right_context", 32)
     args.max_memory_size = getattr(args, "max_memory_size", 5)  # 3 ~ 5 is good
-    # args.max_memory_size = getattr(args, "max_memory_size", 0)  # low latency with good left context, memory can be 0.
+    args.tanh_on_mem = getattr(args, "tanh_on_mem", True)  # if False, hard clipping to +-10 is used.
     s2t_transformer_s(args)

@@ -1,4 +1,5 @@
 import logging
+import torch
 import torch.nn as nn
 from typing import Optional, Dict, List
 from torch import Tensor
@@ -67,7 +68,7 @@ class SimpleJoiner(nn.Module):
         fused_feats = src_feats * self.acoustic_weight + tgt_feats
 
         if target_masks is not None:
-            # B, T, S, C -> sum(T), S, C
+            # B, T, S, C -> T_flat, S, C
             fused_feats = fused_feats[target_masks]
 
         fused_feats = self.fuse_act_fn(fused_feats)
@@ -76,6 +77,8 @@ class SimpleJoiner(nn.Module):
         log_emit = None
         if self.emit_projection is not None:
             log_emit = self.emit_projection(fused_feats).squeeze(-1)
+            if self.training:
+                log_emit += torch.randn_like(log_emit)
         logits = self.output_projection(fused_feats)
         return logits, log_emit
 
@@ -109,6 +112,11 @@ class TransducerDecoder(TransformerDecoder):
             incremental_state=incremental_state,
         )
 
+        if incremental_state is not None:
+            prev_output_tokens = prev_output_tokens[:, -1:]
+            input_buffer = self._get_input_buffer(incremental_state)
+            prev_emit = input_buffer.get("prev_emit", None)
+
         target_masks = prev_output_tokens.ne(
             self.padding_idx) if self.memory_efficient else None
         logits, log_emit = self.joiner(
@@ -117,9 +125,88 @@ class TransducerDecoder(TransformerDecoder):
             target_masks=target_masks,
             # memory_efficient=memory_efficient
         )
+
+        if incremental_state is not None:
+            S, B, C = src_feats.size()
+            V = logits.size(-1)
+            # normal: (B, 1, S) since T == 1
+            # mem_ef: (B, S) since T_flat == B
+            if not self.memory_efficient:
+                log_emit = log_emit.squeeze(1)
+                logits = logits.squeeze(1)
+            # force emit at source eos
+            if padding_mask is not None:
+                source_eos = (~padding_mask).long().sum(-1) - 1
+            else:
+                source_eos = log_emit.new_full((B,), S - 1).long()
+            log_emit.scatter_(
+                1,
+                source_eos.view(B, 1),
+                1e4
+            )
+            if prev_emit is not None:
+                # mask past
+                mask = (
+                    torch
+                    .arange(S)
+                    .to(log_emit.device)
+                    .view(1, S)
+                    .expand(B, -1)
+                ) < prev_emit.view(B, 1).expand(-1, S)
+                log_emit[mask] = -1e4
+
+            # .sigmoid()
+            # .ge(0.5)
+            new_emit = (
+                log_emit
+                .ge(0.0)
+                .cumsum(1)
+                .eq(1)
+                .long()
+                .argmax(1)
+            )
+
+            # B, S, V -> B, 1, V
+            logits = logits.gather(
+                1,
+                new_emit.view(B, 1, 1).expand(-1, -1, V)
+            )
+
+            input_buffer["prev_emit"] = new_emit
+            self._set_input_buffer(incremental_state, input_buffer)
+
         extra["log_emit"] = log_emit
         extra["padding_mask"] = padding_mask
         return logits, extra
+
+    def reorder_incremental_state(
+        self, incremental_state: Dict[str, Dict[str, Optional[Tensor]]], new_order
+    ):
+        """Reorder buffered internal state (for incremental generation)."""
+        input_buffer = self._get_input_buffer(incremental_state)
+        if input_buffer is not None:
+            for k in input_buffer.keys():
+                if input_buffer[k] is not None:
+                    input_buffer[k] = input_buffer[k].index_select(0, new_order)
+            incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+        return incremental_state
+
+    def _get_input_buffer(
+        self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
+    ) -> Dict[str, Optional[Tensor]]:
+        result = self.get_incremental_state(incremental_state, "joiner_state")
+        if result is not None:
+            return result
+        else:
+            empty_result: Dict[str, Optional[Tensor]] = {}
+            return empty_result
+
+    def _set_input_buffer(
+        self,
+        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+        buffer: Dict[str, Optional[Tensor]],
+    ):
+        return self.set_incremental_state(incremental_state, "joiner_state", buffer)
 
 
 @register_model("transducer_model")

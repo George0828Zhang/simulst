@@ -60,11 +60,17 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             action="store_true",
             help="train asr with source text.",
         )
+        parser.add_argument(
+            "--do-mtl",
+            action="store_true",
+            help="train asr with source text, st with target text.",
+        )
 
     def __init__(self, args, src_dict, tgt_dict, infer_tgt_lang_id=None):
         super().__init__(args, src_dict, tgt_dict, infer_tgt_lang_id=infer_tgt_lang_id)
 
         self.do_asr = args.do_asr
+        self.do_mtl = args.do_mtl
         self.inference_cfg = InferenceConfig(args.inference_config_yaml)
         # for speech_to_text, bpe & tokenizer configs are in S2TDataCfg, so passing None is ok
         # bpe_tokenizer is handled by post_process.
@@ -129,6 +135,9 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
                 self.src_dict.pad(),
                 self.src_dict.eos()
             )
+        elif not self.do_mtl:
+            del sample["net_input"]['src_txt_tokens']
+            del sample["net_input"]['src_txt_lengths']
 
         if 'alignment' in sample["net_input"]:
             # dont need
@@ -144,8 +153,8 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             sample, model, criterion, optimizer, update_num, ignore_grad=False)
 
     def valid_step(self, sample, model, criterion):
-        sample = self.process_sample(sample)
-        loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
+        _sample = self.process_sample(sample)
+        loss, sample_size, logging_output = super().valid_step(_sample, model, criterion)
         if self.inference_cfg.eval_any:
             _metrics = self._inference_with_metrics(self.sequence_generator, sample, model)
 
@@ -167,6 +176,7 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
     def inference_step(
         self, generator, models, sample, prefix_tokens=None, constraints=None
     ):
+        sample = self.process_sample(sample)
         if getattr(models[0], "one_pass_decoding", False):
             # one-pass decoding
             if hasattr(self, 'blank_symbol'):
