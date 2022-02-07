@@ -23,6 +23,10 @@ def log_exclusive_cumprod(tensor, dim: int):
     Implementing exclusive cumprod in log space (assume tensor is in log space)
     exclusive cumprod(x) = [1, x1, x1x2, x1x2x3, ..., prod_{i=1}^{n-1} x_i]
     """
+    return exclusive_cumsum(tensor, dim)
+
+
+def exclusive_cumsum(tensor, dim: int):
     tensor = tensor.roll(1, dims=dim)  # right shift 1
     tensor.select(dim, 0).fill_(0)
     tensor = tensor.cumsum(dim)
@@ -132,7 +136,7 @@ def ssnt_loss(
 
     # p_choose: bsz, tgt_len, src_len
     bsz, tgt_len, src_len = log_p_choose.size()
-    dtype = log_p_choose.dtype
+    # dtype = log_p_choose.dtype
     log_p_choose = log_p_choose.float()
 
     source_padding_mask = lengths_to_padding_mask(source_lengths)
@@ -192,7 +196,92 @@ def ssnt_loss(
     elif reduction == "mean":
         log_alpha = log_alpha.mean()
 
-    # Mix precision to prevent overflow for fp16
-    log_alpha = log_alpha.type(dtype)
+    return -log_alpha
+
+
+def ssnt_loss_mem(
+    log_probs: Tensor,
+    targets: Tensor,
+    log_p_choose: Tensor,
+    source_lengths: Tensor,
+    target_lengths: Tensor,
+    neg_inf: float = -1e4,
+    reduction="mean",
+):
+    """
+    Memory efficient
+    log_probs: tgt_len_flat, src_len, vocab
+    targets: tgt_len_flat,
+    p_choose: tgt_len_flat, src_len
+    """
+    prob_check(log_probs, neg_inf=neg_inf, logp=True)
+    prob_check(log_p_choose, neg_inf=neg_inf, logp=True)
+
+    bsz = source_lengths.size(0)
+    tgt_len_flat, src_len = log_p_choose.size()
+    log_p_choose = log_p_choose.float()
+
+    source_lengths_rep = torch.repeat_interleave(source_lengths, target_lengths, dim=0)
+    source_padding_mask = lengths_to_padding_mask(source_lengths_rep)
+    if source_padding_mask.any():
+        assert source_padding_mask.size() == log_p_choose.size()
+        log_p_choose = log_p_choose.masked_fill(source_padding_mask, neg_inf)
+
+    def clamp_logp(x, min=neg_inf, max=0):
+        return x.clamp(min=min, max=max)
+
+    # cumprod_1mp : tgt_len_flat, src_len
+    log_cumprod_1mp = log_exclusive_cumprod(
+        log1mexp(log_p_choose), dim=-1)
+
+    log_alpha = log_p_choose.new_zeros([tgt_len_flat + bsz, src_len])
+    offsets = exclusive_cumsum(target_lengths, dim=0)
+    offsets_out = exclusive_cumsum(target_lengths + 1, dim=0)
+    log_alpha[offsets_out, 1:] = neg_inf
+
+    for i in range(target_lengths.max()):
+        # log_probs:    tgt_len_flat, src_len, vocab
+        # p_choose:     tgt_len_flat, src_len
+        # cumprod_1mp:  tgt_len_flat, src_len
+
+        # operate on fake bsz (aka indices.size(0) below)
+        # get p(y_i | h_*, s_i) -> bsz, src_len
+        # log_probs[indices]:   bsz, src_len, vocab
+        # targets[indices]:     bsz,
+
+        indices = (offsets + i)[i < target_lengths]
+        indices_out = (offsets_out + i)[i < target_lengths]
+        fake_bsz = indices.numel()
+
+        logp_trans = (
+            log_probs[indices]
+            .gather(-1, index=targets[indices].view(fake_bsz, 1, 1).expand(-1, src_len, -1))
+        ).squeeze(-1)
+        log_alpha_i = clamp_logp(
+            logp_trans
+            + log_p_choose[indices]
+            + log_cumprod_1mp[indices]
+            + torch.logcumsumexp(
+                log_alpha[indices_out] - log_cumprod_1mp[indices], dim=1
+            )
+        )
+        log_alpha[indices_out + 1] = log_alpha_i
+
+    # alpha: tgt_len_flat + bsz, src_len
+    # seq-loss: alpha(J, I)
+    # pick target endpoints (bsz, src_len)
+    log_alpha = log_alpha[offsets_out + target_lengths]
+    # pick source endpoints
+    log_alpha = log_alpha.gather(
+        dim=-1,
+        index=(source_lengths - 1).view(bsz, 1)
+    ).view(bsz)
+
+    prob_check(log_alpha, neg_inf=neg_inf, logp=True)
+
+    if reduction == "sum":
+        log_alpha = log_alpha.sum()
+    elif reduction == "mean":
+        log_alpha = log_alpha.mean()
 
     return -log_alpha
