@@ -122,22 +122,23 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
         (Pdb) sample.keys()
         dict_keys(['id', 'net_input', 'target', 'target_lengths', 'ntokens', 'nsentences'])
         """
-        if self.do_asr:
-            sample["target"] = sample['net_input']['src_txt_tokens']
-            sample["target_lengths"] = sample['net_input']['src_txt_lengths']
+        if 'src_txt_tokens' in sample['net_input']:
+            if self.do_asr:
+                sample["target"] = sample['net_input']['src_txt_tokens']
+                sample["target_lengths"] = sample['net_input']['src_txt_lengths']
 
-            del sample["net_input"]['src_txt_tokens']
-            del sample["net_input"]['src_txt_lengths']
+                del sample["net_input"]['src_txt_tokens']
+                del sample["net_input"]['src_txt_lengths']
 
-            sample["net_input"]['prev_output_tokens'] = move_eos_to_begin(
-                sample["target"],
-                sample["target_lengths"],
-                self.src_dict.pad(),
-                self.src_dict.eos()
-            )
-        elif not self.do_mtl:
-            del sample["net_input"]['src_txt_tokens']
-            del sample["net_input"]['src_txt_lengths']
+                sample["net_input"]['prev_output_tokens'] = move_eos_to_begin(
+                    sample["target"],
+                    sample["target_lengths"],
+                    self.src_dict.pad(),
+                    self.src_dict.eos()
+                )
+            elif not self.do_mtl:
+                del sample["net_input"]['src_txt_tokens']
+                del sample["net_input"]['src_txt_lengths']
 
         if 'alignment' in sample["net_input"]:
             # dont need
@@ -153,8 +154,8 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             sample, model, criterion, optimizer, update_num, ignore_grad=False)
 
     def valid_step(self, sample, model, criterion):
-        _sample = self.process_sample(sample)
-        loss, sample_size, logging_output = super().valid_step(_sample, model, criterion)
+        sample = self.process_sample(sample)
+        loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.inference_cfg.eval_any:
             _metrics = self._inference_with_metrics(self.sequence_generator, sample, model)
 

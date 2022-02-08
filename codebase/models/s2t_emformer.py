@@ -2,6 +2,7 @@
 
 import logging
 import math
+import torch
 import torch.nn.functional as F
 from fairseq import checkpoint_utils
 from fairseq.models import (
@@ -87,19 +88,19 @@ class S2TEmformerEncoder(FairseqEncoder):
             stride *= c.stride[0]
         return stride
 
-    # def forward(self, src_tokens, src_lengths):
-    #     self._forward(src_tokens, src_lengths)
-
-    #     from torch.profiler import profile, ProfilerActivity
-    #     # record_shapes=True, with_stack=True,
-    #     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], with_stack=True, profile_memory=True) as prof:
-    #         net_out = self._forward(src_tokens, src_lengths)
-
-    #     print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cuda_memory_usage', row_limit=10))
-    #     import pdb
-    #     pdb.set_trace()
+    def set_num_updates(self, num_updates):
+        super().set_num_updates(num_updates)
+        self.num_updates = num_updates
 
     def forward(self, src_tokens, src_lengths):
+        if self.num_updates < self.encoder_freezing_updates:
+            with torch.no_grad():
+                x = self._forward(src_tokens, src_lengths)
+        else:
+            x = self._forward(src_tokens, src_lengths)
+        return x
+
+    def _forward(self, src_tokens, src_lengths):
         """
         Emformer
         input (torch.Tensor)
@@ -108,7 +109,7 @@ class S2TEmformerEncoder(FairseqEncoder):
             with shape (B,) and i-th element representing number of valid frames for i-th batch element in input.
         -> Tuple[torch.Tensor, torch.Tensor]
             output frames, with shape (B, T - ``right_context_length`, D)`.
-            output lengths, with shape (B,) and i-th element representing number of valid frames for i-th batch element in output frames.
+            output lengths, with shape (B,) and representing number of valid frames in output frames.
         """
         # Step 1. extract features
         x, input_lengths = self.subsample(src_tokens, src_lengths)
