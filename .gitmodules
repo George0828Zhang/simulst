@@ -1,0 +1,3 @@
+[submodule "codebase/criterion/ssnt_loss"]
+	path = codebase/criterion/ssnt_loss
+	url = git@github.com:George0828Zhang/ssnt_loss.git
