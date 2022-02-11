@@ -1,3 +1,6 @@
 [submodule "codebase/criterion/ssnt_loss"]
 	path = codebase/criterion/ssnt_loss
 	url = git@github.com:George0828Zhang/ssnt_loss.git
+[submodule "codebase/models/torch_cif"]
+	path = codebase/models/torch_cif
+	url = git@github.com:George0828Zhang/torch_cif.git
