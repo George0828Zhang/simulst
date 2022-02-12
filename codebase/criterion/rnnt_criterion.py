@@ -10,6 +10,7 @@ from fairseq.criterions import (
     register_criterion,
 )
 from fairseq.criterions.label_smoothed_cross_entropy import (
+    label_smoothed_nll_loss,
     LabelSmoothedCrossEntropyCriterionConfig,
     LabelSmoothedCrossEntropyCriterion
 )
@@ -21,11 +22,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RNNTCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
+    memory_efficient: Optional[bool] = field(
+        default=False,
+        metadata={"help": "To use the ``gather'' option in warp-rnnt."},
+    )
     fastemit_lambda: Optional[float] = field(
         default=0.01,
         metadata={
             "help":
             "scales the non-blank prediction gradient by 1 + lambda to encourage faster emission"
+        },
+    )
+    offline_lambda: Optional[float] = field(
+        default=1.0,
+        metadata={
+            "help":
+            "optimize the offline path at the same time."
         },
     )
 
@@ -47,6 +59,8 @@ class RNNTCriterion(LabelSmoothedCrossEntropyCriterion):
         self.pad_idx = task.target_dictionary.pad()
         self.eos_idx = task.target_dictionary.eos()
         self.fastemit_lambda = cfg.fastemit_lambda
+        self.offline_lambda = cfg.offline_lambda
+        self.memory_efficient = cfg.memory_efficient
 
     def forward(self, model, sample, reduce=True):
         net_output = model(**sample["net_input"])
@@ -77,11 +91,12 @@ class RNNTCriterion(LabelSmoothedCrossEntropyCriterion):
         target_lengths = sample["target_lengths"]
 
         bsz = targets.size(0)
-        max_src = lprobs.size(1)
-        lprobs = lprobs.contiguous()
         if lprobs.size(0) != bsz:
             raise RuntimeError(
                 f'batch size error: lprobs shape={lprobs.size()}, bsz={bsz}')
+
+        bsz, max_src, U, V = lprobs.size()
+        lprobs = lprobs.contiguous()
 
         # get subsampling padding mask & lengths
         if net_output[1]["padding_mask"] is not None:
@@ -99,8 +114,31 @@ class RNNTCriterion(LabelSmoothedCrossEntropyCriterion):
             average_frames=False,
             reduction="sum",
             blank=self.blank_idx,
-            gather=True,
+            gather=self.memory_efficient,
             fastemit_lambda=self.fastemit_lambda
         )
 
-        return loss, loss.detach()
+        # offline loss computation
+        # optimizes the path: last source aligned to each target
+        if self.offline_lambda > 0:
+            # p(yi | target_i aligned to source eos)
+            # pick source_eos at each index
+            lprobs_label = lprobs.gather(
+                dim=1,
+                index=(input_lengths - 1).view(
+                    bsz, 1, 1, 1).expand(bsz, -1, U - 1, V)  # U -1 means discard target eos
+            )
+            # lprobs is now (B, 1, U-1, V)
+            # targets is (B, U-1)
+            off_loss, nll_loss = label_smoothed_nll_loss(
+                lprobs_label.view(-1, V),
+                targets.view(-1),
+                self.eps,
+                ignore_index=self.pad_idx,
+                reduce=True,
+            )
+            loss += self.offline_lambda * off_loss
+        else:
+            nll_loss = loss
+
+        return loss, nll_loss.detach()

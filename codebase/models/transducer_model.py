@@ -20,46 +20,106 @@ from codebase.models.s2t_emformer import (
 logger = logging.getLogger(__name__)
 
 
+class InplaceTanh(nn.Module):
+    def forward(self, x):
+        return x.tanh_()
+
+
 class SimpleJoiner(nn.Module):
     def __init__(self, args, output_projection=None):
         super().__init__()
 
-        self.acoustic_weight = args.acoustic_weight
+        hidden_dim = args.decoder_embed_dim
 
-        assert args.encoder_embed_dim == args.decoder_embed_dim
+        # transcriber projection
+        self.source_projection = nn.Linear(
+            args.encoder_embed_dim,
+            hidden_dim,
+            bias=True,
+        )
+        self.target_projection = nn.Linear(
+            args.decoder_embed_dim,
+            hidden_dim,
+            bias=False,
+        )
 
-        self.fuse_act_fn = nn.GELU()
-
+        # in-place & inexpensive is preferred.
+        self.join_act = InplaceTanh()
         # word prediction
         self.output_projection = output_projection
+
+        nn.init.xavier_uniform_(
+            self.source_projection.weight,
+            gain=(args.encoder_layers + 1) ** -0.5
+        )
+        nn.init.xavier_uniform_(
+            self.target_projection.weight,
+            gain=(args.decoder_layers + 1) ** -0.5
+        )
 
     def forward(self, src_feats, tgt_feats):
         assert src_feats.size(1) == tgt_feats.size(0)
 
         # src S B C -> B, S, T, C
+        src_feats = self.source_projection(src_feats)
         src_feats = src_feats.transpose(0, 1).unsqueeze(2)
 
         # tgt B T C -> B, S, T, C
+        tgt_feats = self.target_projection(tgt_feats)
         tgt_feats = tgt_feats.unsqueeze(1)
 
-        # if self.training:
-        #     tgt_feats.register_hook(lambda g: g / S)
-        #     src_feats.register_hook(lambda g: g / T)
+        # join
+        join_feats = src_feats + tgt_feats
+        join_feats = self.join_act(join_feats)
+        logits = self.output_projection(join_feats)
 
-        # combine
-        fused_feats = src_feats * self.acoustic_weight + tgt_feats * (1 - self.acoustic_weight)
-        fused_feats = self.fuse_act_fn(fused_feats)
-
-        logits = self.output_projection(fused_feats)
         return logits
+
+
+class AvgPool1dTBCPad(nn.AvgPool1d):
+    def forward(self, x, padding_mask=None):
+        T, B, C = x.size()
+        k = self.kernel_size[0]
+        if padding_mask is not None:
+            lengths = (~padding_mask).sum(1)
+            x[padding_mask.transpose(1, 0)] = 0
+            padding_mask = padding_mask[:, ::k]
+        x = super().forward(
+            x.permute(1, 2, 0)).permute(2, 0, 1)
+        if padding_mask is not None:
+            with torch.no_grad():
+                r = torch.remainder(lengths - 1, k) + 1
+                # for each in B, multiply k / r at newlen - 1
+                index = (lengths - r).div(k).long()
+                index = index.view(1, B, 1).expand(-1, -1, C)
+                scale = (k / r).masked_fill(lengths == T, 1)
+                scale = scale.type_as(x).view(1, B, 1).expand(-1, -1, C)
+                x.scatter_(0, index, scale, reduce="multiply")
+        return x, padding_mask
 
 
 class TransducerDecoder(TransformerDecoder):
     def __init__(self, args, dictionary, embed_tokens, output_projection=None):
         super().__init__(args, dictionary, embed_tokens, True, output_projection)
-        self.downsample = max(args.downsample, 1)
+        self.downsample_op = AvgPool1dTBCPad(
+            kernel_size=args.downsample,
+            stride=args.downsample,
+            ceil_mode=True,
+        ) if args.downsample > 1 else None
+
         self.joiner = SimpleJoiner(args, self.output_projection)
         self.padding_idx = dictionary.pad()
+
+        @torch.no_grad()
+        def scale(m):
+            m.weight.mul_((3 * 2 * args.decoder_layers) ** -0.25)
+
+        scale(self.embed_tokens)
+        for layer in self.layers:
+            scale(layer.self_attn.v_proj)
+            scale(layer.self_attn.out_proj)
+            scale(layer.fc1)
+            scale(layer.fc2)
 
     def forward(
         self,
@@ -70,9 +130,8 @@ class TransducerDecoder(TransformerDecoder):
     ):
         src_feats = encoder_out["encoder_out"][0]  # T B C
         padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
-        src_feats = src_feats[::self.downsample]
-        if padding_mask is not None:
-            padding_mask = padding_mask[:, ::self.downsample]
+        if self.downsample_op is not None:
+            src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
         # size
         S, B, C = src_feats.size()
@@ -126,7 +185,7 @@ class TransducerDecoder(TransformerDecoder):
                     .arange(S, device=logits.device)
                     .view(1, S)
                 ) < prev_emit.view(B, 1)
-                logits[mask] = 1e4 * F.one_hot(torch.LongTensor([bos]), V).type_as(logits) * 1e4
+                logits[mask] = F.one_hot(torch.LongTensor([bos]), V).type_as(logits)
 
             # B, S
             preds = logits.argmax(-1)
@@ -159,7 +218,7 @@ class TransducerDecoder(TransformerDecoder):
     ):
         """
         Clear incremental states in the transformer layers.
-        The cache is generated because of a forward pass of decode but no prediction.        
+        The cache is generated because of a forward pass of decode but no prediction.
         """
         def prune_incremental_states(layer, prune):
             if hasattr(layer, "self_attn"):
@@ -226,11 +285,6 @@ class TransducerModel(S2TEmformerModel):
             metavar="STR",
             help="model to take decoder (output_projection) weights from (for initialization)."
         )
-        parser.add_argument(
-            "--acoustic-weight",
-            type=float,
-            help="increase weight of acoustic model over lm. default 0.5"
-        )
 
     @classmethod
     def build_decoder(cls, args, task, decoder_embed_tokens):
@@ -252,6 +306,5 @@ class TransducerModel(S2TEmformerModel):
 def transducer_model_s(args):
     args.downsample = getattr(args, "downsample", 8)
     # args.decoder_layers = getattr(args, "decoder_layers", 2)
-    args.acoustic_weight = getattr(args, "acoustic_weight", 0.5)
     args.activation_fn = getattr(args, "activation_fn", "gelu")
     s2t_emformer_s(args)
