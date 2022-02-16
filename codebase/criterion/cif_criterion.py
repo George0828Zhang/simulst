@@ -26,6 +26,21 @@ class CIFCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
         default=1.0,
         metadata={"help": "factor for quantity loss."},
     )
+    quant_clip: Optional[float] = field(
+        default=10.0,
+        metadata={"help": "for each example in batch, clip the max value for quant loss."},
+    )
+
+
+def clipped_l2_loss(x, y, reduce=True, clip=None):
+    if clip is not None:
+        clip = clip ** 0.5
+        with torch.no_grad():
+            clipped_y = y.clip(min=x - clip, max=x + clip)
+    else:
+        clipped_y = y
+    l_quant = F.mse_loss(x, clipped_y, reduction='none')
+    return l_quant.sum() if reduce else l_quant
 
 
 @register_criterion(
@@ -44,24 +59,27 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         self.pad_idx = task.target_dictionary.pad()
         self.eos_idx = task.target_dictionary.eos()
         self.quant_factor = cfg.quant_factor
+        self.quant_clip = cfg.quant_clip
 
     def forward(self, model, sample, reduce=True):
         net_output = model(**sample["net_input"])
         loss, nll_loss = self.compute_loss(
             model, net_output, sample, reduce=reduce)
 
+        nsentences = sample["target"].size(0)
         sample_size = (
-            sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
+            nsentences if self.sentence_avg else sample["ntokens"]
         )
-        alpha_sum = net_output[1]["alpha_sum"][0]
+        alpha_sum = net_output[1]["alpha_sum"][0].float()
         target_lengths = sample["target_lengths"].type_as(alpha_sum)
-        l_quant = F.l1_loss(alpha_sum, target_lengths, reduction='mean')
+        l_quant = clipped_l2_loss(
+            alpha_sum, target_lengths, clip=self.quant_clip)
         loss = loss + l_quant * self.quant_factor
         logging_output = {
             "loss": loss.data,
             "nll_loss": nll_loss.data,
             "ntokens": sample["ntokens"],
-            "nsentences": sample["target"].size(0),
+            "nsentences": nsentences,
             "sample_size": sample_size,
 
             "quantity": l_quant.data,

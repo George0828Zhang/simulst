@@ -128,7 +128,7 @@ class S2TEmformerEncoder(FairseqEncoder):
 
         # Step 3. emformer forward
         assert x.size(1) == input_lengths.max().item() + self.right_context
-        x, out_lengths = self.emformer_blocks(x, input_lengths)
+        x, out_lengths, encoder_states = self.emformer_blocks(x, input_lengths)
         # B T C -> T B C
         x = x.transpose(0, 1)
         encoder_padding_mask = lengths_to_padding_mask(out_lengths)
@@ -138,7 +138,7 @@ class S2TEmformerEncoder(FairseqEncoder):
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
             "encoder_embedding": [],
-            "encoder_states": [],
+            "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
         }

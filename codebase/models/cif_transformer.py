@@ -1,10 +1,11 @@
-import torch
+import re
+# import torch
 import torch.nn as nn
 import logging
 from typing import Optional, Dict, List
 from torch import Tensor
 from pathlib import Path
-from fairseq import checkpoint_utils
+from fairseq import checkpoint_utils, utils
 
 from fairseq.models import (
     register_model,
@@ -14,6 +15,10 @@ from fairseq.models.transformer import (
     TransformerDecoder,
     Linear
 )
+from fairseq.modules import (
+    LayerNorm,
+    FairseqDropout
+)
 from fairseq.incremental_decoding_utils import with_incremental_state
 
 from codebase.models.torch_cif import cif_function
@@ -22,6 +27,7 @@ from codebase.models.s2t_emformer import (
     S2TEmformerModel,
     s2t_emformer_s
 )
+from codebase.models.causal_conv import CausalConvTBC
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,21 @@ class CIFTransformerModel(S2TEmformerModel):
     def add_args(parser):
         super(CIFTransformerModel,
               CIFTransformerModel).add_args(parser)
+        parser.add_argument(
+            "--cif-beta",
+            type=float,
+            help="Cif firing threshold."
+        )
+        parser.add_argument(
+            "--cif-sg-alpha",
+            action="store_true",
+            help="stop gradient for alpha prediction."
+        )
+        parser.add_argument(
+            "--cif-conv-kernel",
+            type=int,
+            help="Conv1d kernel for alpha prediction."
+        )
         parser.add_argument(
             "--nar-decoder",
             action="store_true",
@@ -77,23 +98,23 @@ class CIFLayer(nn.Module):
         self,
         in_features,
         hidden_dim,
+        kernel_size,
+        activation_fn,
+        dropout,
+        sg_alpha,
         beta,
-        max_len,
+        max_len
     ):
         super().__init__()
 
-        # emission prediction
-        emit_fc1 = Linear(in_features, hidden_dim, bias=True)
-        emit_act_fn = nn.Tanh()
-        emit_fc2 = nn.utils.weight_norm(
-            Linear(hidden_dim, 1, bias=True), name="weight")
-        nn.init.constant_(emit_fc2.weight_g, hidden_dim ** -0.5)
-        nn.init.constant_(emit_fc2.bias, -1.)
-        self.emit_projection = nn.Sequential(
-            emit_fc1,
-            emit_act_fn,
-            emit_fc2
+        self.alpha_proj = nn.Sequential(
+            CausalConvTBC(in_features, hidden_dim, kernel_size=kernel_size),
+            LayerNorm(hidden_dim),
+            utils.get_activation_fn(activation=activation_fn),
+            FairseqDropout(float(dropout), module_name=self.__class__.__name__),
+            Linear(hidden_dim, 1, bias=True)
         )
+        self.sg_alpha = sg_alpha
         self.beta = beta
         self.max_len = max_len
 
@@ -115,10 +136,14 @@ class CIFLayer(nn.Module):
         if incremental_state is not None:
             raise NotImplementedError("This functionality is for streaming. You be implemented soon.")
 
-        x = x.transpose(1, 0)
-
         # calculate integration weights
-        alpha = self.emit_projection(x).sigmoid_().squeeze(-1)
+        if self.sg_alpha:
+            alpha = self.alpha_proj(x.detach())
+        else:
+            alpha = self.alpha_proj(x)
+
+        x = x.transpose(1, 0)
+        alpha = alpha.transpose(1, 0).sigmoid().squeeze(-1)
 
         x, feat_lengths, alpha_sum = cif_function(
             x,
@@ -141,7 +166,11 @@ class CIFEncoder(S2TEmformerEncoder):
         self.cif_layer = CIFLayer(
             in_features=args.encoder_embed_dim,
             hidden_dim=args.encoder_embed_dim,
-            beta=1.0,
+            kernel_size=args.cif_conv_kernel,
+            activation_fn=args.activation_fn,
+            dropout=args.activation_dropout,
+            sg_alpha=args.cif_sg_alpha,
+            beta=args.cif_beta,
             max_len=args.max_target_positions - 1
         )
 
@@ -177,17 +206,10 @@ class CIFEncoder(S2TEmformerEncoder):
         """
         1. ignores cif projection if not available
         """
-        ignores = [
-            "cif_layer.emit_projection.0.weight",
-            "cif_layer.emit_projection.0.bias",
-            "cif_layer.emit_projection.2.bias",
-            "cif_layer.emit_projection.2.weight_g",
-            "cif_layer.emit_projection.2.weight_v"
-        ]
         cur_state_dict = self.state_dict()
 
-        for w in ignores:
-            if w not in state_dict:
+        for w in cur_state_dict.keys():
+            if re.search(r"cif_layer\..*", w) is not None and w not in state_dict:
                 logger.warning("Ignoring CIF projection weights! Make sure this is intended...")
                 state_dict[w] = cur_state_dict[w]
 
@@ -244,7 +266,6 @@ class CIFDecoder(TransformerDecoder):
         cif: Optional[Tensor] = None
         cif_lengths: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
-        eos_mask: Optional[Tensor] = None
         if encoder_out is not None and len(encoder_out["encoder_out"]) > 0:
             enc = encoder_out["encoder_out"][0]
             assert (
@@ -268,7 +289,6 @@ class CIFDecoder(TransformerDecoder):
 
         if incremental_state is not None:
             _T = prev_output_tokens.size(1)
-            eos_mask = cif_lengths < _T
             cif_index = cif_lengths.clip(max=_T) - 1
             cif = cif.gather(
                 1,
@@ -281,9 +301,8 @@ class CIFDecoder(TransformerDecoder):
         # embed tokens and positions
         x = cif
         if not self.is_nar:
-            x += self.embed_tokens(prev_output_tokens)
-
-        x *= self.embed_scale
+            # ar
+            x = (x + self.embed_tokens(prev_output_tokens)) * self.embed_scale
 
         if self.quant_noise is not None:
             x = self.quant_noise(x)
@@ -345,15 +364,47 @@ class CIFDecoder(TransformerDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        if eos_mask is not None:
-            # x: (B, 1, C)
-            # eos_mask: (B, )
-            x[eos_mask, -1, self.dictionary.eos()] = 1e4
-
         return x, {"attn": [attn], "inner_states": inner_states}
+
+    def forward(
+        self,
+        prev_output_tokens,
+        encoder_out: Optional[Dict[str, List[Tensor]]] = None,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        features_only: bool = False,
+        full_context_alignment: bool = False,
+        alignment_layer: Optional[int] = None,
+        alignment_heads: Optional[int] = None,
+        **unused
+    ):
+        x, extra = self.extract_features_scriptable(
+            prev_output_tokens,
+            encoder_out=encoder_out,
+            incremental_state=incremental_state,
+            full_context_alignment=full_context_alignment,
+            alignment_layer=alignment_layer,
+            alignment_heads=alignment_heads,
+        )
+
+        if not features_only:
+            x = self.output_layer(x)
+
+        if incremental_state is not None:
+            cif_lengths = encoder_out["cif_lengths"][0]
+            overshoot = (prev_output_tokens.size(1) - cif_lengths).clip(min=0)
+            # x: (B, 1, C)
+            # overshoot: (B, )
+            eos = self.dictionary.eos()
+            x[:, -1, eos] += overshoot
+
+        return x, extra
 
 
 @register_model_architecture("cif_transformer", "cif_transformer_s")
 def cif_transformer(args):
     args.nar_decoder = getattr(args, "nar_decoder", False)
+    args.cif_beta = getattr(args, "cif_beta", 1.0)  # set to smaller value to allow longer predictions
+    args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)
+    args.cif_conv_kernel = getattr(args, "cif_conv_kernel", 3)
+    args.activation_fn = getattr(args, "activation_fn", "gelu")
     s2t_emformer_s(args)

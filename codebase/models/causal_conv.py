@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from typing import Optional, Dict, List
 from fairseq.incremental_decoding_utils import with_incremental_state
+from fairseq.modules import ConvTBC
 
 
 def make_causal(klass):
@@ -12,12 +13,7 @@ def make_causal(klass):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.padding = (0, *self.padding[1:])  # 1. remove automatic temporal pad
-            if self.weight.dim() == 3:
-                self._manual_pad = (self.kernel_size[0] - 1, 0)
-            elif self.weight.dim() == 4:
-                self._manual_pad = (0, 0, self.kernel_size[0] - 1, 0)
-            else:
-                raise NotImplementedError
+            self.Tdim, self.Bdim, self._manual_pad = self._infer_causal_params()
 
         @property
         def manual_padding(self):
@@ -41,22 +37,38 @@ def make_causal(klass):
         ):
             return self.set_incremental_state(incremental_state, "conv_state", buffer)
 
+        def reorder_incremental_state(
+            self,
+            incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+            new_order: Tensor,
+        ):
+            """Reorder buffered internal state (for incremental generation)."""
+            input_buffer = self._get_input_buffer(incremental_state)
+            if input_buffer is not None:
+                for k in input_buffer.keys():
+                    input_buffer_k = input_buffer[k]
+                    if input_buffer_k is not None:
+                        input_buffer[k] = input_buffer_k.index_select(self.Bdim, new_order)
+                incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+            return incremental_state
+
         # 3. make causal
         def forward(self, x, incremental_state=None):
             # B x C x T x D
             k = self.kernel_size[0]
-            cur_len = x.size(2)
+            cur_len = x.size(self.Tdim)
             if incremental_state is not None:
                 saved_state = self._get_input_buffer(incremental_state)
                 if saved_state is not None and "prev_feat" in saved_state:
                     prev_feat = saved_state["prev_feat"]
                     assert prev_feat is not None
-                    x = torch.cat([prev_feat, x], dim=2)
+                    x = torch.cat([prev_feat, x], dim=self.Tdim)
                     saved_state["prev_feat"] = x
                     self._set_input_buffer(incremental_state, saved_state)
 
             x = F.pad(x, self._manual_pad)  # left pad kernel - 1
-            x = x[:, :, -(cur_len + k - 1):]  # keep k - 1 left context
+            # x = x[:, :, -(cur_len + k - 1):]  # keep k - 1 left context
+            x = x.narrow(self.Tdim, -(cur_len + k - 1), (cur_len + k - 1))  # dim, start, length
             return super().forward(x)
 
     Name.__name__ = klass.__name__
@@ -65,12 +77,23 @@ def make_causal(klass):
 
 @make_causal
 class CausalConv1d(nn.Conv1d):
-    pass
+    def _infer_causal_params(self):
+        """ B, C, T, padding at last."""
+        return 2, 0, (self.kernel_size[0] - 1, 0)
 
 
 @make_causal
 class CausalConv2d(nn.Conv2d):
-    pass
+    def _infer_causal_params(self):
+        """ B, C, T, D, padding at 2nd to last."""
+        return 2, 0, (0, 0, self.kernel_size[0] - 1, 0)
+
+
+@make_causal
+class CausalConvTBC(ConvTBC):
+    def _infer_causal_params(self):
+        """ T B C, padding at 3rd to last."""
+        return 0, 1, (0, 0, 0, 0, self.kernel_size[0] - 1, 0)
 
 
 class CausalConv1dSubsampler(nn.Module):

@@ -792,7 +792,11 @@ class Emformer(torch.nn.Module):
         attention_mask = (1 - torch.cat([torch.cat(mask) for mask in masks_to_concat])).to(torch.bool)
         return attention_mask
 
-    def forward(self, input: torch.Tensor, lengths: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        input: torch.Tensor,
+        lengths: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         r"""Forward pass for training and non-streaming inference.
 
         B: batch size;
@@ -806,12 +810,15 @@ class Emformer(torch.nn.Module):
                 number of valid frames for i-th batch element in ``input``.
 
         Returns:
-            (Tensor, Tensor):
+            (Tensor, Tensor, List[Tensor]):
                 Tensor
                     output frames, with shape `(B, T - ``right_context_length``, D)`.
                 Tensor
                     output lengths, with shape `(B,)` and i-th element representing
                     number of valid frames for i-th batch element in output frames.
+                List[Tensor]
+                    output states; list of tensors representing Emformer internal states
+                    generated during the forward pass.
         """
         input = input.permute(1, 0, 2)
         right_context = self._gen_right_context(input)
@@ -823,11 +830,13 @@ class Emformer(torch.nn.Module):
             else torch.empty(0).to(dtype=input.dtype, device=input.device)
         )
         output = utterance
+        output_states: List[torch.Tensor] = []
         for layer in self.emformer_layers:
             output, right_context, mems = layer(output, lengths, right_context, mems, attention_mask)
+            output_states.append(output)
         if self.final_layer_norm is not None:
             output = self.final_layer_norm(output)
-        return output.permute(1, 0, 2), lengths
+        return output.permute(1, 0, 2), lengths, output_states
 
     @torch.jit.export
     def infer(
