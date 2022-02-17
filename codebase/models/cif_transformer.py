@@ -5,7 +5,7 @@ import logging
 from typing import Optional, Dict, List
 from torch import Tensor
 from pathlib import Path
-from fairseq import checkpoint_utils, utils
+from fairseq import checkpoint_utils
 
 from fairseq.models import (
     register_model,
@@ -28,6 +28,10 @@ from codebase.models.s2t_emformer import (
     s2t_emformer_s
 )
 from codebase.models.causal_conv import CausalConvTBC
+from codebase.models.common import (
+    AvgPool1dTBCPad,
+    scale_init
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,10 @@ class CIFTransformerModel(S2TEmformerModel):
             "--nar-decoder",
             action="store_true",
             help="train non-autoregressive decoder."
+        )
+        parser.add_argument(
+            "--downsample",
+            type=int,
         )
 
     @classmethod
@@ -89,6 +97,9 @@ class CIFTransformerModel(S2TEmformerModel):
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
         extra["alpha_sum"] = encoder_out["alpha_sum"]
+        extra["delays"] = encoder_out["delays"]
+        extra["cif_lengths"] = encoder_out["cif_lengths"]
+        extra["padding_mask"] = encoder_out["encoder_padding_mask"]
         return logits, extra
 
 
@@ -99,7 +110,6 @@ class CIFLayer(nn.Module):
         in_features,
         hidden_dim,
         kernel_size,
-        activation_fn,
         dropout,
         sg_alpha,
         beta,
@@ -110,7 +120,7 @@ class CIFLayer(nn.Module):
         self.alpha_proj = nn.Sequential(
             CausalConvTBC(in_features, hidden_dim, kernel_size=kernel_size),
             LayerNorm(hidden_dim),
-            utils.get_activation_fn(activation=activation_fn),
+            nn.GELU(),
             FairseqDropout(float(dropout), module_name=self.__class__.__name__),
             Linear(hidden_dim, 1, bias=True)
         )
@@ -145,7 +155,7 @@ class CIFLayer(nn.Module):
         x = x.transpose(1, 0)
         alpha = alpha.transpose(1, 0).sigmoid().squeeze(-1)
 
-        x, feat_lengths, alpha_sum = cif_function(
+        x, feat_lengths, alpha_sum, delays = cif_function(
             x,
             alpha,
             beta=self.beta,
@@ -157,17 +167,21 @@ class CIFLayer(nn.Module):
         # project back and (B, T, C-1) -> (T, B, C-1)
         x = x.transpose(0, 1)
 
-        return x, feat_lengths, alpha_sum
+        return x, feat_lengths, alpha_sum, delays
 
 
 class CIFEncoder(S2TEmformerEncoder):
     def __init__(self, args):
         super().__init__(args)
+        self.downsample_op = AvgPool1dTBCPad(
+            kernel_size=args.downsample,
+            stride=args.downsample,
+            ceil_mode=True,
+        ) if args.downsample > 1 else None
         self.cif_layer = CIFLayer(
             in_features=args.encoder_embed_dim,
             hidden_dim=args.encoder_embed_dim,
             kernel_size=args.cif_conv_kernel,
-            activation_fn=args.activation_fn,
             dropout=args.activation_dropout,
             sg_alpha=args.cif_sg_alpha,
             beta=args.cif_beta,
@@ -175,18 +189,26 @@ class CIFEncoder(S2TEmformerEncoder):
         )
 
     def forward(self, src_tokens, src_lengths, target_lengths=None, incremental_state=None):
-        x = super().forward(src_tokens, src_lengths)
+        encoder_out = super().forward(src_tokens, src_lengths)
+        src_feats = encoder_out["encoder_out"][0]  # T B C
+        padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
+        if self.downsample_op is not None:
+            src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
-        cif_out, cif_lengths, alpha_sum = self.cif_layer(
-            x["encoder_out"][0],
-            x["encoder_padding_mask"][0] if len(x["encoder_padding_mask"]) > 0 else None,
+        cif_out, cif_lengths, alpha_sum, delays = self.cif_layer(
+            src_feats,
+            padding_mask,
             target_lengths=target_lengths,
             incremental_state=incremental_state,
         )
-        x["cif_out"] = [cif_out]
-        x["cif_lengths"] = [cif_lengths]
-        x["alpha_sum"] = [alpha_sum]
-        return x
+        encoder_out.update({
+            "encoder_padding_mask": [padding_mask],
+            "cif_out": [cif_out],
+            "cif_lengths": [cif_lengths],
+            "alpha_sum": [alpha_sum],
+            "delays": [delays]
+        })
+        return encoder_out
 
     def reorder_encoder_out(self, encoder_out, new_order):
         new_encoder_out = super().reorder_encoder_out(encoder_out, new_order)
@@ -195,11 +217,12 @@ class CIFEncoder(S2TEmformerEncoder):
             if len(encoder_out["cif_out"]) == 0
             else [x.index_select(1, new_order) for x in encoder_out["cif_out"]]
         )
-        new_encoder_out["cif_lengths"] = (
-            []
-            if len(encoder_out["cif_lengths"]) == 0
-            else [x.index_select(0, new_order) for x in encoder_out["cif_lengths"]]
-        )
+        for key in ("cif_lengths", "alpha_sum", "delays"):
+            new_encoder_out[key] = (
+                []
+                if len(encoder_out[key]) == 0
+                else [x.index_select(0, new_order) for x in encoder_out[key]]
+            )
         return new_encoder_out
 
     def load_state_dict(self, state_dict, strict=True):
@@ -231,6 +254,7 @@ class CIFDecoder(TransformerDecoder):
             no_encoder_attn=True,
             output_projection=output_projection
         )
+        scale_init(self)
         self.is_nar = args.nar_decoder
 
     def extract_features_scriptable(
@@ -402,6 +426,7 @@ class CIFDecoder(TransformerDecoder):
 
 @register_model_architecture("cif_transformer", "cif_transformer_s")
 def cif_transformer(args):
+    args.downsample = getattr(args, "downsample", 8)
     args.nar_decoder = getattr(args, "nar_decoder", False)
     args.cif_beta = getattr(args, "cif_beta", 1.0)  # set to smaller value to allow longer predictions
     args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)

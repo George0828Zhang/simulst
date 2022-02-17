@@ -5,6 +5,7 @@ from torch import Tensor
 from typing import Optional, Dict, List
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules import ConvTBC
+from fairseq.models.transformer import Linear
 
 
 def make_causal(klass):
@@ -142,4 +143,70 @@ class CausalConv1dSubsampler(nn.Module):
             x = F.glu(x, dim=1)
         # _, _, out_seq_len = x.size()
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
+        return x, self.get_out_seq_lens_tensor(src_lengths)
+
+
+class CausalVGGBlock(nn.Module):
+    """Causal ConvTransformer pre-net.
+    ESPnet-ST: https://arxiv.org/abs/2004.10234
+    ConvTransformer: https://arxiv.org/abs/1909.06317
+
+    Args:
+        input_dim (int): the number of input speech features.
+        in_channels (int): the number of input channels, 1 for mono speech.
+        mid_channels (int): the number of intermediate channels
+        out_channels (int): the number of output channels
+        kernel_sizes (List[int]): the kernel size for each convolutional layer
+    """
+    def __init__(
+        self,
+        input_dim: int = 80,
+        in_channels: int = 1,
+        mid_channels: int = 256,
+        out_channels: int = 256,
+        kernel_sizes: List[int] = (3, 3),
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.in_channels = in_channels
+        self.conv_layers = nn.ModuleList(
+            CausalConv2d(
+                in_channels if i == 0 else mid_channels,
+                mid_channels,
+                k,
+                stride=2,
+                padding=k // 2,
+            )
+            for i, k in enumerate(kernel_sizes)
+        )
+        conv_out_dim = self.infer_conv_output_dim(input_dim)
+        self.out = Linear(conv_out_dim, out_channels)
+
+    def infer_conv_output_dim(self, input_dim):
+        out = torch.Tensor([input_dim])
+        for c in self.conv_layers:
+            out = ((out.float() + 2 * c.padding[1] - c.dilation[1] * (c.kernel_size[1] - 1) - 1) / c.stride[1] + 1).floor().long()
+            out_channel = c.out_channels
+        return out * out_channel
+
+    def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
+        out = in_seq_lens_tensor.clone()
+        for c in self.conv_layers:
+            padding = getattr(c, "manual_padding", 2 * c.padding[0])
+            out = ((out.float() + padding - c.dilation[0] * (c.kernel_size[0] - 1) - 1) / c.stride[0] + 1).floor().long()
+        return out
+
+    def forward(self, src_tokens, src_lengths, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None):
+        bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
+        x = (
+            src_tokens.view(bsz, in_seq_len, self.in_channels, self.input_dim)
+            .transpose(1, 2)
+            .contiguous()
+        )  # -> B x C x T x D
+        for conv in self.conv_layers:
+            x = conv(x)
+            x = F.relu(x)
+        bsz, _, out_seq_len, _ = x.size()
+        x = x.transpose(1, 2).transpose(0, 1).contiguous().view(out_seq_len, bsz, -1)  # -> T x B x C x D
+        x = self.out(x)
         return x, self.get_out_seq_lens_tensor(src_lengths)

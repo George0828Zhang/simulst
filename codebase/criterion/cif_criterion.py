@@ -15,6 +15,7 @@ from fairseq.criterions.label_smoothed_cross_entropy import (
     LabelSmoothedCrossEntropyCriterionConfig,
     LabelSmoothedCrossEntropyCriterion
 )
+from simuleval.metrics.latency import DifferentiableAverageLagging
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ class CIFCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
     quant_clip: Optional[float] = field(
         default=10.0,
         metadata={"help": "for each example in batch, clip the max value for quant loss."},
+    )
+    latency_factor: Optional[float] = field(
+        default=0.0,
+        metadata={"help": "factor for latency loss."},
     )
 
 
@@ -60,6 +65,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         self.eos_idx = task.target_dictionary.eos()
         self.quant_factor = cfg.quant_factor
         self.quant_clip = cfg.quant_clip
+        self.latency_factor = cfg.latency_factor
 
     def forward(self, model, sample, reduce=True):
         net_output = model(**sample["net_input"])
@@ -74,7 +80,8 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         target_lengths = sample["target_lengths"].type_as(alpha_sum)
         l_quant = clipped_l2_loss(
             alpha_sum, target_lengths, clip=self.quant_clip)
-        loss = loss + l_quant * self.quant_factor
+        l_latency = self.compute_latency_loss(net_output, sample)
+        loss = loss + l_quant * self.quant_factor + l_latency * self.latency_factor
         logging_output = {
             "loss": loss.data,
             "nll_loss": nll_loss.data,
@@ -83,8 +90,33 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             "sample_size": sample_size,
 
             "quantity": l_quant.data,
+            "dal": l_latency.data
         }
         return loss, sample_size, logging_output
+
+    def compute_latency_loss(self, net_output, sample):
+        delays = net_output[1]["delays"][0].float()
+        input_lengths = sample["net_input"]["src_lengths"].type_as(delays)
+        target_lengths = sample["target_lengths"].type_as(delays)
+        target_padding_mask = sample["target"].eq(self.pad_idx)
+
+        # get subsampling padding mask & lengths
+        if net_output[1]["padding_mask"][0] is not None:
+            non_padding_mask = ~net_output[1]["padding_mask"][0]
+            encoder_lengths = non_padding_mask.type_as(delays).sum(-1)
+        else:
+            raise RuntimeError("expected padding mask as the encoder output subsample mask.")
+
+        # renormalize to frame level delays
+        delays *= (input_lengths / encoder_lengths).unsqueeze(1)
+
+        DAL = DifferentiableAverageLagging(
+            delays,
+            input_lengths,
+            target_lengths,
+            target_padding_mask=target_padding_mask
+        )
+        return DAL.sum()
 
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:
@@ -99,7 +131,13 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
 
         quantity = sum_logs("quantity")
         nsentences = sum_logs("nsentences")
+        dal = sum_logs("dal")
 
         metrics.log_scalar(
             "quantity", quantity / nsentences, nsentences, round=3
+        )
+
+        # 40 ms/frame
+        metrics.log_scalar(
+            "dal", dal / nsentences * 40, nsentences, round=3
         )
