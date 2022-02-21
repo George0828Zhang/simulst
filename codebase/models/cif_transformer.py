@@ -58,6 +58,11 @@ class CIFTransformerModel(S2TEmformerModel):
             help="Conv1d kernel for alpha prediction."
         )
         parser.add_argument(
+            "--cif-highway",
+            action="store_true",
+            help="add highway connection from cif to softmax."
+        )
+        parser.add_argument(
             "--nar-decoder",
             action="store_true",
             help="train non-autoregressive decoder."
@@ -93,13 +98,18 @@ class CIFTransformerModel(S2TEmformerModel):
             src_lengths,
             prev_output_tokens.ne(self.decoder.padding_idx).sum(1),
         )
+        ctc_logits = self.decoder.ctc_layer(
+            encoder_out["encoder_out"][0]).transpose(0, 1)
         logits, extra = self.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        extra["alpha_sum"] = encoder_out["alpha_sum"]
-        extra["delays"] = encoder_out["delays"]
-        extra["cif_lengths"] = encoder_out["cif_lengths"]
-        extra["padding_mask"] = encoder_out["encoder_padding_mask"]
+        extra.update({
+            "ctc_logits": [ctc_logits],
+            "alpha_sum": encoder_out["alpha_sum"],
+            "delays": encoder_out["delays"],
+            "cif_lengths": encoder_out["cif_lengths"],
+            "padding_mask": encoder_out["encoder_padding_mask"]
+        })
         return logits, extra
 
 
@@ -127,6 +137,14 @@ class CIFLayer(nn.Module):
         self.sg_alpha = sg_alpha
         self.beta = beta
         self.max_len = max_len
+
+    def extra_repr(self):
+        s = "sg_alpha={}, beta={}, max_len={}".format(
+            self.sg_alpha,
+            self.beta,
+            self.max_len
+        )
+        return s
 
     def forward(
         self,
@@ -202,6 +220,7 @@ class CIFEncoder(S2TEmformerEncoder):
             incremental_state=incremental_state,
         )
         encoder_out.update({
+            "encoder_out": [src_feats],
             "encoder_padding_mask": [padding_mask],
             "cif_out": [cif_out],
             "cif_lengths": [cif_lengths],
@@ -256,6 +275,12 @@ class CIFDecoder(TransformerDecoder):
         )
         scale_init(self)
         self.is_nar = args.nar_decoder
+        self.highway = args.cif_highway
+        self.ctc_layer = Linear(
+            args.encoder_embed_dim,
+            len(dictionary),
+            bias=False
+        )
 
     def extract_features_scriptable(
         self,
@@ -291,10 +316,10 @@ class CIFDecoder(TransformerDecoder):
         cif_lengths: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
         if encoder_out is not None and len(encoder_out["encoder_out"]) > 0:
-            enc = encoder_out["encoder_out"][0]
-            assert (
-                enc.size()[1] == bs
-            ), f"Expected enc.shape == (t, {bs}, c) got {enc.shape}"
+            # enc = encoder_out["encoder_out"][0]
+            # assert (
+            #     enc.size()[1] == bs
+            # ), f"Expected enc.shape == (t, {bs}, c) got {enc.shape}"
             cif = encoder_out["cif_out"][0]
             assert (
                 cif.size()[1] == bs
@@ -385,6 +410,10 @@ class CIFDecoder(TransformerDecoder):
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
+        # highway connection
+        if self.highway:
+            x += cif
+
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
@@ -426,10 +455,11 @@ class CIFDecoder(TransformerDecoder):
 
 @register_model_architecture("cif_transformer", "cif_transformer_s")
 def cif_transformer(args):
-    args.downsample = getattr(args, "downsample", 8)
+    args.downsample = getattr(args, "downsample", 1)
     args.nar_decoder = getattr(args, "nar_decoder", False)
     args.cif_beta = getattr(args, "cif_beta", 1.0)  # set to smaller value to allow longer predictions
     args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)
     args.cif_conv_kernel = getattr(args, "cif_conv_kernel", 3)
+    args.cif_highway = getattr(args, "cif_highway", False)
     args.activation_fn = getattr(args, "activation_fn", "gelu")
     s2t_emformer_s(args)
