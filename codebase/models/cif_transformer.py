@@ -105,7 +105,8 @@ class CIFTransformerModel(S2TEmformerModel):
         )
         extra.update({
             "ctc_logits": [ctc_logits],
-            "alpha_sum": encoder_out["alpha_sum"],
+            # "alpha_sum": encoder_out["alpha_sum"],
+            "alpha": encoder_out["alpha"],
             "delays": encoder_out["delays"],
             "cif_lengths": encoder_out["cif_lengths"],
             "padding_mask": encoder_out["encoder_padding_mask"]
@@ -185,7 +186,8 @@ class CIFLayer(nn.Module):
         # project back and (B, T, C-1) -> (T, B, C-1)
         x = x.transpose(0, 1)
 
-        return x, feat_lengths, alpha_sum, delays
+        # return x, feat_lengths, alpha_sum, delays
+        return x, feat_lengths, alpha, delays
 
 
 class CIFEncoder(S2TEmformerEncoder):
@@ -213,7 +215,8 @@ class CIFEncoder(S2TEmformerEncoder):
         if self.downsample_op is not None:
             src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
-        cif_out, cif_lengths, alpha_sum, delays = self.cif_layer(
+        # cif_out, cif_lengths, alpha_sum, delays = self.cif_layer(
+        cif_out, cif_lengths, alpha, delays = self.cif_layer(
             src_feats,
             padding_mask,
             target_lengths=target_lengths,
@@ -224,7 +227,8 @@ class CIFEncoder(S2TEmformerEncoder):
             "encoder_padding_mask": [padding_mask],
             "cif_out": [cif_out],
             "cif_lengths": [cif_lengths],
-            "alpha_sum": [alpha_sum],
+            # "alpha_sum": [alpha_sum],
+            "alpha": [alpha],
             "delays": [delays]
         })
         return encoder_out
@@ -236,7 +240,8 @@ class CIFEncoder(S2TEmformerEncoder):
             if len(encoder_out["cif_out"]) == 0
             else [x.index_select(1, new_order) for x in encoder_out["cif_out"]]
         )
-        for key in ("cif_lengths", "alpha_sum", "delays"):
+        # for key in ("cif_lengths", "alpha_sum", "delays"):
+        for key in ("cif_lengths", "alpha", "delays"):
             new_encoder_out[key] = (
                 []
                 if len(encoder_out[key]) == 0
