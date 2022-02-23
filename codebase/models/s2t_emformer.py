@@ -4,6 +4,8 @@ import logging
 import math
 import torch
 import torch.nn.functional as F
+from torch import Tensor
+from typing import Optional, Dict
 from fairseq import checkpoint_utils
 from fairseq.models import (
     FairseqEncoder,
@@ -13,15 +15,16 @@ from fairseq.models import (
 from fairseq.modules import (
     FairseqDropout
 )
+from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.data.data_utils import lengths_to_padding_mask
 from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerEncoder,
     S2TTransformerModel,
     s2t_transformer_s
 )
-from .s2t_transformer import make_conv_pos
-from .causal_conv import CausalConv1dSubsampler
-from .torchaudio_models import Emformer
+from codebase.models.s2t_transformer import make_conv_pos
+from codebase.models.causal_conv import CausalConv1dSubsampler
+from codebase.models.torchaudio_models import Emformer
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ logger = logging.getLogger(__name__)
 #################################################
 # block-causal transformer encoder #
 #################################################
+@with_incremental_state
 class S2TEmformerEncoder(FairseqEncoder):
     def __init__(self, args):
         super().__init__(args)
@@ -145,6 +149,71 @@ class S2TEmformerEncoder(FairseqEncoder):
 
     def reorder_encoder_out(self, encoder_out, new_order):
         return S2TTransformerEncoder.reorder_encoder_out(self, encoder_out, new_order)
+
+    def _get_input_buffer(
+        self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
+    ) -> Dict[str, Optional[Tensor]]:
+        result = self.get_incremental_state(incremental_state, "emformer_state")
+        if result is not None:
+            return result
+        else:
+            empty_result: Dict[str, Optional[Tensor]] = {}
+            return empty_result
+
+    def _set_input_buffer(
+        self,
+        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+        buffer: Dict[str, Optional[Tensor]],
+    ):
+        return self.set_incremental_state(incremental_state, "emformer_state", buffer)
+
+    def infer(self, src_tokens, src_lengths, incremental_state):
+        # T: segment_length (+ right_context for first segment)
+        x, input_lengths = self.subsample(src_tokens, src_lengths, incremental_state)
+        x = self.embed_scale * x
+
+        # T B C -> B C T
+        x = x.permute(1, 2, 0)
+        # add position
+        x = x + self.embed_positions(x, incremental_state)  # += causes bug in inference
+        # B C T -> B T C
+        x = x.transpose(2, 1)
+
+        states = None
+        saved_state = self._get_input_buffer(incremental_state)
+        # we need to append the right context from last segment
+        if "context" in saved_state:
+            context = saved_state["context"]
+            x = torch.cat((context, x), dim=1)
+
+        assert x.size(1) >= self.right_context, (
+            f"Need at least {self.right_context} states to continue, got {x.size(1)}")
+        context = x.narrow(dim=1, start=-self.right_context, length=self.right_context)
+
+        if "prev_state" in saved_state:
+            states = saved_state["prev_state"]
+            assert states is not None
+
+        # Step 3. emformer forward
+        x, out_lengths, encoder_states = self.emformer_blocks.infer(x, input_lengths, states)
+
+        # Step 4. cache the right context for next segment
+        saved_state["context"] = context
+        saved_state["prev_state"] = encoder_states
+        self._set_input_buffer(incremental_state, saved_state)
+
+        # B T C -> T B C
+        x = x.transpose(0, 1)
+        encoder_padding_mask = lengths_to_padding_mask(out_lengths)
+
+        return {
+            "encoder_out": [x],
+            "encoder_padding_mask": [encoder_padding_mask],
+            "encoder_embedding": [],
+            "encoder_states": encoder_states,
+            "src_tokens": [],
+            "src_lengths": [],
+        }
 
 
 @register_model("s2t_emformer")

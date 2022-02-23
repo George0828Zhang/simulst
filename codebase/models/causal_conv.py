@@ -64,8 +64,8 @@ def make_causal(klass):
                     prev_feat = saved_state["prev_feat"]
                     assert prev_feat is not None
                     x = torch.cat([prev_feat, x], dim=self.Tdim)
-                    saved_state["prev_feat"] = x
-                    self._set_input_buffer(incremental_state, saved_state)
+                saved_state["prev_feat"] = x
+                self._set_input_buffer(incremental_state, saved_state)
 
             x = F.pad(x, self._manual_pad)  # left pad kernel - 1
             # x = x[:, :, -(cur_len + k - 1):]  # keep k - 1 left context
@@ -138,8 +138,16 @@ class CausalConv1dSubsampler(nn.Module):
     def forward(self, src_tokens, src_lengths, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None):
         # bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
         x = src_tokens.transpose(1, 2).contiguous()  # -> B x (C x D) x T
+
+        if incremental_state is not None:
+            saved_state = self.conv_layers[0]._get_input_buffer(incremental_state)
+            prev_len = 0
+            if "prev_feat" in saved_state:
+                prev_len = saved_state["prev_feat"].size(2)
+            x = x[..., prev_len:]  # only forward new features
+
         for conv in self.conv_layers:
-            x = conv(x)
+            x = conv(x, incremental_state)
             x = F.glu(x, dim=1)
         # _, _, out_seq_len = x.size()
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
