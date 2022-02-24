@@ -1,5 +1,5 @@
 import re
-# import torch
+import torch
 import torch.nn as nn
 import logging
 from typing import Optional, Dict, List
@@ -124,7 +124,6 @@ class CIFLayer(nn.Module):
         dropout,
         sg_alpha,
         beta,
-        max_len
     ):
         super().__init__()
 
@@ -137,13 +136,13 @@ class CIFLayer(nn.Module):
         )
         self.sg_alpha = sg_alpha
         self.beta = beta
-        self.max_len = max_len
+        self.tail_thres = beta / 2
 
     def extra_repr(self):
-        s = "sg_alpha={}, beta={}, max_len={}".format(
+        s = "sg_alpha={}, beta={}, tail_thres={}".format(
             self.sg_alpha,
             self.beta,
-            self.max_len
+            self.tail_thres,
         )
         return s
 
@@ -152,7 +151,6 @@ class CIFLayer(nn.Module):
         x,
         encoder_padding_mask: Optional[Tensor] = None,
         target_lengths: Optional[Tensor] = None,
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
     ):
         r"""
         Args:
@@ -162,9 +160,6 @@ class CIFLayer(nn.Module):
         Returns:
             encoded output of shape `(seq_len, batch, embed_dim)`
         """
-        if incremental_state is not None:
-            raise NotImplementedError("This functionality is for streaming. You be implemented soon.")
-
         # calculate integration weights
         if self.sg_alpha:
             alpha = self.alpha_proj(x.detach())
@@ -174,20 +169,92 @@ class CIFLayer(nn.Module):
         x = x.transpose(1, 0)
         alpha = alpha.transpose(1, 0).sigmoid().squeeze(-1)
 
-        x, feat_lengths, alpha_sum, delays = cif_function(
+        cif_out = cif_function(
             x,
             alpha,
             beta=self.beta,
+            tail_thres=self.tail_thres,
             padding_mask=encoder_padding_mask,
             target_lengths=target_lengths,
-            max_output_length=self.max_len
         )
 
-        # project back and (B, T, C-1) -> (T, B, C-1)
-        x = x.transpose(0, 1)
+        # (B, T, C-1) -> (T, B, C-1)
+        cif_feats = cif_out["cif_out"][0].transpose(0, 1)
+        cif_out.update({
+            "cif_out": [cif_feats],
+            "alpha": [alpha]
+        })
+        return cif_out
 
-        # return x, feat_lengths, alpha_sum, delays
-        return x, feat_lengths, alpha, delays
+    def infer(
+        self,
+        x,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        encoder_padding_mask: Optional[Tensor] = None,
+        finish=False,
+    ):
+        """ expects incremental input (x is a new chunk)
+        x: (chunk_len, batch, embed_dim)
+        """
+        chunk_len, bsz, C = x.size()
+        if bsz > 1:
+            raise NotImplementedError("batched infer not supported for now.")
+
+        # calculate integration weights
+        alpha = x
+        for m in self.alpha_proj:
+            if isinstance(m, CausalConvTBC):
+                alpha = m(alpha, incremental_state)
+            else:
+                alpha = m(alpha)
+
+        x = x.transpose(1, 0)
+        alpha = alpha.transpose(1, 0).sigmoid().squeeze(-1)
+        # alpha_fw = alpha.clone()
+
+        cached_state = self.get_incremental_state(incremental_state, "cif_state")
+        if cached_state is None:
+            cached_state: Dict[str, Optional[Tensor]] = {}
+        if (
+            "prev_weight" in cached_state
+            and cached_state["prev_weight"].numel() > 0
+        ):
+            # leftover features with weight
+            # we can treat it as a single source feature
+            prev_weight = cached_state["prev_weight"]   # (B, 1)
+            prev_feat = cached_state["prev_feat"]       # (B, 1, C)
+            alpha = torch.cat((prev_weight, alpha), dim=1)
+            x = torch.cat((prev_feat, x), dim=1)
+
+        cif_out = cif_function(
+            x,
+            alpha,
+            beta=self.beta,
+            tail_thres=self.tail_thres if finish else 1e-6,
+            padding_mask=encoder_padding_mask,
+        )
+
+        cif_feats = cif_out["cif_out"][0]  # (B, t, C)
+        cif_len = cif_out["cif_lengths"][0].item()  # (B,)
+        tail_weight = cif_out["tail_weights"][0]  # (B,)
+        # we now assume B = 1
+        if not finish or tail_weight.item() + 1e-6 >= self.tail_thres:
+            prev_feat = cif_feats.narrow(1, cif_len - 1, 1)  # (B, 1, C)
+            prev_weight = tail_weight.view(bsz, 1)   # (B, 1)
+        else:
+            prev_feat = prev_weight = torch.empty(0).type_as(x)
+
+        cached_state["prev_feat"] = prev_feat
+        cached_state["prev_weight"] = prev_weight
+        self.set_incremental_state(incremental_state, "cif_state", cached_state)
+
+        cif_feats = cif_feats.narrow(
+            1, 0, cif_len if finish else cif_len - 1).transpose(0, 1)  # (B, t-1, C)
+        cif_out.update({
+            "cif_out": [cif_feats],
+            "alpha": [alpha]
+        })
+        return cif_out
 
 
 class CIFEncoder(S2TEmformerEncoder):
@@ -205,10 +272,9 @@ class CIFEncoder(S2TEmformerEncoder):
             dropout=args.activation_dropout,
             sg_alpha=args.cif_sg_alpha,
             beta=args.cif_beta,
-            max_len=args.max_target_positions - 1
         )
 
-    def forward(self, src_tokens, src_lengths, target_lengths=None, incremental_state=None):
+    def forward(self, src_tokens, src_lengths, target_lengths=None):
         encoder_out = super().forward(src_tokens, src_lengths)
         src_feats = encoder_out["encoder_out"][0]  # T B C
         padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
@@ -216,21 +282,26 @@ class CIFEncoder(S2TEmformerEncoder):
             src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
         # cif_out, cif_lengths, alpha_sum, delays = self.cif_layer(
-        cif_out, cif_lengths, alpha, delays = self.cif_layer(
+        # cif_out, cif_lengths, alpha, delays = self.cif_layer(
+        cif_out = self.cif_layer(
             src_feats,
             padding_mask,
             target_lengths=target_lengths,
-            incremental_state=incremental_state,
         )
         encoder_out.update({
             "encoder_out": [src_feats],
             "encoder_padding_mask": [padding_mask],
-            "cif_out": [cif_out],
-            "cif_lengths": [cif_lengths],
-            # "alpha_sum": [alpha_sum],
-            "alpha": [alpha],
-            "delays": [delays]
+            **cif_out
         })
+        # encoder_out.update({
+        #     "encoder_out": [src_feats],
+        #     "encoder_padding_mask": [padding_mask],
+        #     "cif_out": [cif_out],
+        #     "cif_lengths": [cif_lengths],
+        #     # "alpha_sum": [alpha_sum],
+        #     "alpha": [alpha],
+        #     "delays": [delays]
+        # })
         return encoder_out
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -365,7 +436,7 @@ class CIFDecoder(TransformerDecoder):
             x = self.project_in_dim(x)
 
         if positions is not None:
-            x += positions
+            x = x + positions
 
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
@@ -417,7 +488,7 @@ class CIFDecoder(TransformerDecoder):
 
         # highway connection
         if self.highway:
-            x += cif
+            x = x + cif
 
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
