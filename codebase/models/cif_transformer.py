@@ -231,15 +231,14 @@ class CIFLayer(nn.Module):
             alpha,
             beta=self.beta,
             tail_thres=self.tail_thres if finish else 1e-6,
-            padding_mask=encoder_padding_mask,
         )
 
         cif_feats = cif_out["cif_out"][0]  # (B, t, C)
-        cif_len = cif_out["cif_lengths"][0].item()  # (B,)
+        cif_len = cif_out["cif_lengths"][0]  # (B,)
         tail_weight = cif_out["tail_weights"][0]  # (B,)
         # we now assume B = 1
-        if not finish or tail_weight.item() + 1e-6 >= self.tail_thres:
-            prev_feat = cif_feats.narrow(1, cif_len - 1, 1)  # (B, 1, C)
+        if not finish or (tail_weight.item() + 1e-6 >= self.tail_thres):
+            prev_feat = cif_feats.narrow(1, cif_len.item() - 1, 1)  # (B, 1, C)
             prev_weight = tail_weight.view(bsz, 1)   # (B, 1)
         else:
             prev_feat = prev_weight = torch.empty(0).type_as(x)
@@ -248,10 +247,12 @@ class CIFLayer(nn.Module):
         cached_state["prev_weight"] = prev_weight
         self.set_incremental_state(incremental_state, "cif_state", cached_state)
 
+        cif_len = cif_len if finish else (cif_len - 1)
         cif_feats = cif_feats.narrow(
-            1, 0, cif_len if finish else cif_len - 1).transpose(0, 1)  # (B, t-1, C)
+            1, 0, cif_len.item()).transpose(0, 1)  # (B, t-1, C)
         cif_out.update({
             "cif_out": [cif_feats],
+            "cif_lengths": [cif_len],
             "alpha": [alpha]
         })
         return cif_out
@@ -302,6 +303,30 @@ class CIFEncoder(S2TEmformerEncoder):
         #     "alpha": [alpha],
         #     "delays": [delays]
         # })
+        return encoder_out
+
+    def infer(self, src_tokens, src_lengths, incremental_state, finish=False):
+        encoder_out = super().infer(
+            src_tokens,
+            src_lengths,
+            incremental_state=incremental_state,
+            finish=finish
+        )
+        src_feats = encoder_out["encoder_out"][0]  # T B C
+        padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
+        if self.downsample_op is not None:
+            src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
+
+        cif_out = self.cif_layer.infer(
+            src_feats,
+            incremental_state=incremental_state,
+            finish=finish,
+        )
+        encoder_out.update({
+            "encoder_out": [src_feats],
+            "encoder_padding_mask": [padding_mask],
+            **cif_out
+        })
         return encoder_out
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -504,6 +529,7 @@ class CIFDecoder(TransformerDecoder):
         full_context_alignment: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
+        overshoot_weight: float = 1.0,
         **unused
     ):
         x, extra = self.extract_features_scriptable(
@@ -524,7 +550,7 @@ class CIFDecoder(TransformerDecoder):
             # x: (B, 1, C)
             # overshoot: (B, )
             eos = self.dictionary.eos()
-            x[:, -1, eos] += overshoot
+            x[:, -1, eos] += overshoot.type_as(x) * overshoot_weight
 
         return x, extra
 

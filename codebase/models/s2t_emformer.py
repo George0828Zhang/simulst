@@ -63,6 +63,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         )
 
         stride = self.conv_layer_stride()
+        self.stride = stride
         self.left_context = args.segment_left_context // stride
         self.right_context = args.segment_right_context // stride
         self.segment_length = args.segment_length // stride
@@ -167,17 +168,32 @@ class S2TEmformerEncoder(FairseqEncoder):
     ):
         return self.set_incremental_state(incremental_state, "emformer_state", buffer)
 
-    def infer(self, src_tokens, src_lengths, incremental_state):
-        # T: segment_length (+ right_context for first segment)
-        x, input_lengths = self.subsample(src_tokens, src_lengths, incremental_state)
+    def infer(self, src_tokens, src_lengths, incremental_state, finish=False):
+        assert src_tokens.size(0) == 1, "batched streaming not supported yet"
+        import math
+        t = int(math.ceil((src_lengths.item() - 96) / 64))
+        print(f'({t}) 0: {src_tokens.size(1)}')
+
+        x, input_lengths = self.subsample(
+            src_tokens, src_lengths, incremental_state, finish=finish)
         x = self.embed_scale * x
+        print(f'({t}) 1: {x.size(0)} {input_lengths.item()}')
 
         # T B C -> B C T
         x = x.permute(1, 2, 0)
+        # right-padding
+        if finish:
+            print("=======================finish=======================")
+            # no more right context in future -> let emformer return all encoded x
+            # x = F.pad(x, (0, self.segment_length - x.size(2) + self.right_context))
+            x = F.pad(x, (0, self.right_context))
+            input_lengths = input_lengths + self.right_context
+        print(f'({t}) 3: {x.size(2)}')
         # add position
         x = x + self.embed_positions(x, incremental_state)  # += causes bug in inference
         # B C T -> B T C
         x = x.transpose(2, 1)
+        print(f'({t}) 4: {x.size(1)}')
 
         states = None
         saved_state = self._get_input_buffer(incremental_state)
@@ -185,6 +201,8 @@ class S2TEmformerEncoder(FairseqEncoder):
         if "context" in saved_state:
             context = saved_state["context"]
             x = torch.cat((context, x), dim=1)
+            input_lengths = input_lengths + context.size(1)
+        print(f'({t}) 5: {x.size(1)}')
 
         assert x.size(1) >= self.right_context, (
             f"Need at least {self.right_context} states to continue, got {x.size(1)}")
@@ -196,6 +214,7 @@ class S2TEmformerEncoder(FairseqEncoder):
 
         # Step 3. emformer forward
         x, out_lengths, encoder_states = self.emformer_blocks.infer(x, input_lengths, states)
+        print(f'({t}) 6: {x.size(1)} {out_lengths.item()}')
 
         # Step 4. cache the right context for next segment
         saved_state["context"] = context

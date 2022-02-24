@@ -58,6 +58,7 @@ def make_causal(klass):
             # B x C x T x D
             k = self.kernel_size[0]
             cur_len = x.size(self.Tdim)
+            assert cur_len > 0
             if incremental_state is not None:
                 saved_state = self._get_input_buffer(incremental_state)
                 if saved_state is not None and "prev_feat" in saved_state:
@@ -127,6 +128,7 @@ class CausalConv1dSubsampler(nn.Module):
             )
             for i, k in enumerate(kernel_sizes)
         )
+        self.out_channels = out_channels
 
     def get_out_seq_lens_tensor(self, in_seq_lens_tensor):
         out = in_seq_lens_tensor.clone()
@@ -135,7 +137,7 @@ class CausalConv1dSubsampler(nn.Module):
             out = ((out.float() + padding - c.dilation[0] * (c.kernel_size[0] - 1) - 1) / c.stride[0] + 1).floor().long()
         return out
 
-    def forward(self, src_tokens, src_lengths, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None):
+    def forward(self, src_tokens, src_lengths, incremental_state=None, finish=False):
         # bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
         x = src_tokens.transpose(1, 2).contiguous()  # -> B x (C x D) x T
 
@@ -145,10 +147,15 @@ class CausalConv1dSubsampler(nn.Module):
             if "prev_feat" in saved_state:
                 prev_len = saved_state["prev_feat"].size(2)
             x = x[..., prev_len:]  # only forward new features
+            assert x.size(0) == 1, "batched streaming not supported"
+            src_lengths = src_lengths - prev_len
 
-        for conv in self.conv_layers:
-            x = conv(x, incremental_state)
-            x = F.glu(x, dim=1)
+        if finish and x.size(2) == 0:
+            x = x.new_empty((x.size(0), self.out_channels, 0))
+        else:
+            for conv in self.conv_layers:
+                x = conv(x, incremental_state)
+                x = F.glu(x, dim=1)
         # _, _, out_seq_len = x.size()
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
         return x, self.get_out_seq_lens_tensor(src_lengths)
