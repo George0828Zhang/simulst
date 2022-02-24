@@ -118,6 +118,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         """
         # Step 1. extract features
         x, input_lengths = self.subsample(src_tokens, src_lengths)
+        encoder_embedding = x
         x = self.embed_scale * x
 
         # Step 2. add padding and positions
@@ -129,6 +130,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         x += self.embed_positions(x)
         # B C T -> B T C
         x = x.transpose(2, 1)
+        # encoder_embedding = x.transpose(0, 1).clone()
         x = self.dropout_module(x)
 
         # Step 3. emformer forward
@@ -142,7 +144,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_embedding": [],
+            "encoder_embedding": [encoder_embedding],
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
@@ -176,6 +178,7 @@ class S2TEmformerEncoder(FairseqEncoder):
 
         x, input_lengths = self.subsample(
             src_tokens, src_lengths, incremental_state, finish=finish)
+        encoder_embedding = x.clone()  # ok
         x = self.embed_scale * x
         print(f'({t}) 1: {x.size(0)} {input_lengths.item()}')
 
@@ -185,15 +188,18 @@ class S2TEmformerEncoder(FairseqEncoder):
         if finish:
             print("=======================finish=======================")
             # no more right context in future -> let emformer return all encoded x
-            # x = F.pad(x, (0, self.segment_length - x.size(2) + self.right_context))
+            k = self.segment_length - x.size(2)
             x = F.pad(x, (0, self.right_context))
-            input_lengths = input_lengths + self.right_context
+            # x = F.pad(x, (0, self.right_context))
+            input_lengths = input_lengths + k
         print(f'({t}) 3: {x.size(2)}')
         # add position
         x = x + self.embed_positions(x, incremental_state)  # += causes bug in inference
         # B C T -> B T C
         x = x.transpose(2, 1)
         print(f'({t}) 4: {x.size(1)}')
+
+        # encoder_embedding = x.transpose(0, 1).clone()  # ok
 
         states = None
         saved_state = self._get_input_buffer(incremental_state)
@@ -228,7 +234,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_embedding": [],
+            "encoder_embedding": [encoder_embedding],
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
