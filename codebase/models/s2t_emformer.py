@@ -211,8 +211,11 @@ class S2TEmformerEncoder(FairseqEncoder):
         carry = x[:, self.segment_length:, :]
 
         # current input size is length + rc
+        carry_len = torch.zeros_like(block_rc_len)
         if block_rc_len.item() > self.segment_length:
-            x = x[:, :block_rc_len.item(), :]
+            carry_len = block_rc_len - self.segment_length
+            x = x[:, :self.segment_length + self.right_context, :]
+            block_rc_len[0] = x.size(1)
 
         # retrieve prev states
         states = None
@@ -231,23 +234,25 @@ class S2TEmformerEncoder(FairseqEncoder):
         self._set_input_buffer(incremental_state, saved_state)
 
         # extra forward for last segment
-        if finish and block_rc_len.item() > self.segment_length:
-            # carry_size = block_rc_len - self.segment_length
-            # assert carry.size(1) == carry_size.item() + self.right_context, (
-            #     f"{carry.size(1)} == {carry_size.item()} + {self.right_context}")
-            # assert carry.numel() > 0
+        if finish and carry_len.item() > 0:
+            assert carry.size(1) == carry_len.item() + self.right_context, (
+                f"{carry.size(1)} == {carry_len.item()} + {self.right_context}")
+            assert carry.numel() > 0
+            carry_len = carry_len + self.right_context
+            print(f'({t}) rc: {carry.size(1)} {carry_len.item()}')
+            rc, rc_lengths, rc_states = self.emformer_blocks.infer(carry, carry_len, encoder_states)
+            print(f'({t}) rc: {rc.size(1)} {rc_lengths.item()}')
+            x = torch.cat((x, rc), dim=1)
+            out_lengths = out_lengths + rc_lengths
+            print(f'({t}) 7: {x.size(1)} {out_lengths.item()}')
+            # carry_size = block_rc_len.fill_(self.right_context)
+            # print(f'({t}) rc1: {carry.size(1)} {carry_size.item()}')
+            # carry = F.pad(carry, (0, 0, 0, 2 * self.right_context - carry.size(1)))
+            # print(f'({t}) rc2: {carry.size(1)}')
             # rc, rc_lengths, rc_states = self.emformer_blocks.infer(carry, carry_size, encoder_states)
             # x = torch.cat((x, rc), dim=1)
             # out_lengths = out_lengths + rc_lengths
             # print(f'({t}) 7: {x.size(1)} {out_lengths.item()}')
-            carry_size = block_rc_len.fill_(self.right_context)
-            print(f'({t}) rc1: {carry.size(1)} {carry_size.item()}')
-            carry = F.pad(carry, (0, 0, 0, 2 * self.right_context - carry.size(1)))
-            print(f'({t}) rc2: {carry.size(1)}')
-            rc, rc_lengths, rc_states = self.emformer_blocks.infer(carry, carry_size, encoder_states)
-            x = torch.cat((x, rc), dim=1)
-            out_lengths = out_lengths + rc_lengths
-            print(f'({t}) 7: {x.size(1)} {out_lengths.item()}')
 
         # B T C -> T B C
         x = x.transpose(0, 1)
