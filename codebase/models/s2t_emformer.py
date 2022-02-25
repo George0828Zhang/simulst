@@ -118,7 +118,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         """
         # Step 1. extract features
         x, input_lengths = self.subsample(src_tokens, src_lengths)
-        encoder_embedding = x
+        # encoder_embedding = x
         x = self.embed_scale * x
 
         # Step 2. add padding and positions
@@ -130,7 +130,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         x += self.embed_positions(x)
         # B C T -> B T C
         x = x.transpose(2, 1)
-        # encoder_embedding = x.transpose(0, 1).clone()
+        encoder_embedding = x.transpose(0, 1).clone()
         x = self.dropout_module(x)
 
         # Step 3. emformer forward
@@ -178,7 +178,7 @@ class S2TEmformerEncoder(FairseqEncoder):
 
         x, input_lengths = self.subsample(
             src_tokens, src_lengths, incremental_state, finish=finish)
-        encoder_embedding = x.clone()  # ok
+        # encoder_embedding = x.clone()  # ok
         x = self.embed_scale * x
         print(f'({t}) 1: {x.size(0)} {input_lengths.item()}')
 
@@ -187,45 +187,67 @@ class S2TEmformerEncoder(FairseqEncoder):
         # right-padding
         if finish:
             print("=======================finish=======================")
-            # no more right context in future -> let emformer return all encoded x
-            k = self.segment_length - x.size(2)
             x = F.pad(x, (0, self.right_context))
-            # x = F.pad(x, (0, self.right_context))
-            input_lengths = input_lengths + k
-        print(f'({t}) 3: {x.size(2)}')
+        print(f'({t}) 2: {x.size(2)}')
         # add position
         x = x + self.embed_positions(x, incremental_state)  # += causes bug in inference
         # B C T -> B T C
         x = x.transpose(2, 1)
+        print(f'({t}) 3: {x.size(1)}')
+
+        encoder_embedding = x.transpose(0, 1).clone()  # ok
+
+        block_rc_len = input_lengths
+        saved_state = self._get_input_buffer(incremental_state)
+        # we need to carry the last segment's rc to this segment
+        if "carry" in saved_state:
+            carry = saved_state["carry"]
+            x = torch.cat((carry, x), dim=1)
+            block_rc_len = input_lengths + carry.size(1)
         print(f'({t}) 4: {x.size(1)}')
 
-        # encoder_embedding = x.transpose(0, 1).clone()  # ok
+        # compute carry segment
+        # next_carry_len = block_rc_len - self.segment_length
+        carry = x[:, self.segment_length:, :]
 
+        # current input size is length + rc
+        if block_rc_len.item() > self.segment_length:
+            x = x[:, :block_rc_len.item(), :]
+
+        # retrieve prev states
         states = None
-        saved_state = self._get_input_buffer(incremental_state)
-        # we need to append the right context from last segment
-        if "context" in saved_state:
-            context = saved_state["context"]
-            x = torch.cat((context, x), dim=1)
-            input_lengths = input_lengths + context.size(1)
-        print(f'({t}) 5: {x.size(1)}')
-
-        assert x.size(1) >= self.right_context, (
-            f"Need at least {self.right_context} states to continue, got {x.size(1)}")
-        context = x.narrow(dim=1, start=-self.right_context, length=self.right_context)
-
         if "prev_state" in saved_state:
             states = saved_state["prev_state"]
             assert states is not None
 
-        # Step 3. emformer forward
-        x, out_lengths, encoder_states = self.emformer_blocks.infer(x, input_lengths, states)
+        print(f'({t}) 5: {x.size(1)}')
+        # emformer forward
+        x, out_lengths, encoder_states = self.emformer_blocks.infer(x, block_rc_len, states)
         print(f'({t}) 6: {x.size(1)} {out_lengths.item()}')
 
-        # Step 4. cache the right context for next segment
-        saved_state["context"] = context
+        # cache the carry & state for next segment
+        saved_state["carry"] = carry
         saved_state["prev_state"] = encoder_states
         self._set_input_buffer(incremental_state, saved_state)
+
+        # extra forward for last segment
+        if finish and block_rc_len.item() > self.segment_length:
+            # carry_size = block_rc_len - self.segment_length
+            # assert carry.size(1) == carry_size.item() + self.right_context, (
+            #     f"{carry.size(1)} == {carry_size.item()} + {self.right_context}")
+            # assert carry.numel() > 0
+            # rc, rc_lengths, rc_states = self.emformer_blocks.infer(carry, carry_size, encoder_states)
+            # x = torch.cat((x, rc), dim=1)
+            # out_lengths = out_lengths + rc_lengths
+            # print(f'({t}) 7: {x.size(1)} {out_lengths.item()}')
+            carry_size = block_rc_len.fill_(self.right_context)
+            print(f'({t}) rc1: {carry.size(1)} {carry_size.item()}')
+            carry = F.pad(carry, (0, 0, 0, 2 * self.right_context - carry.size(1)))
+            print(f'({t}) rc2: {carry.size(1)}')
+            rc, rc_lengths, rc_states = self.emformer_blocks.infer(carry, carry_size, encoder_states)
+            x = torch.cat((x, rc), dim=1)
+            out_lengths = out_lengths + rc_lengths
+            print(f'({t}) 7: {x.size(1)} {out_lengths.item()}')
 
         # B T C -> T B C
         x = x.transpose(0, 1)
