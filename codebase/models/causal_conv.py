@@ -147,8 +147,7 @@ class CausalConv1dSubsampler(nn.Module):
             if "prev_feat" in saved_state:
                 prev_len = saved_state["prev_feat"].size(2)
             x = x[..., prev_len:]  # only forward new features
-            assert x.size(0) == 1, "batched streaming not supported"
-            src_lengths = src_lengths - prev_len
+            src_lengths = (src_lengths - prev_len).clip(min=0)
 
         if finish and x.size(2) == 0:
             x = x.new_empty((x.size(0), self.out_channels, 0))
