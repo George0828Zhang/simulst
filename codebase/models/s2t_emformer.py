@@ -129,7 +129,6 @@ class S2TEmformerEncoder(FairseqEncoder):
         x = x + self.embed_positions(x)
         # B C T -> B T C
         x = x.transpose(2, 1)
-        encoder_embedding = x.transpose(0, 1).clone()
         x = self.dropout_module(x)
 
         # Step 3. emformer forward
@@ -143,7 +142,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_embedding": [encoder_embedding],
+            "encoder_embedding": [],
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
@@ -185,8 +184,6 @@ class S2TEmformerEncoder(FairseqEncoder):
         x = x + self.embed_positions(x, incremental_state)
         # B C T -> B T C
         x = x.transpose(2, 1)
-
-        encoder_embedding = x.transpose(0, 1).clone()  # ok
 
         block_rc_len = input_lengths
         saved_state = self._get_input_buffer(incremental_state)
@@ -237,7 +234,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],
             "encoder_padding_mask": [encoder_padding_mask],
-            "encoder_embedding": [encoder_embedding],
+            "encoder_embedding": [],
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],

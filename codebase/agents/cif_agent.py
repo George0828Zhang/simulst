@@ -4,7 +4,6 @@ import logging
 import numpy as np
 import torch
 import torchaudio.compliance.kaldi as kaldi
-from torch.testing import assert_close
 from fairseq import utils, checkpoint_utils, tasks
 logger = logging.getLogger(__name__)
 
@@ -308,11 +307,10 @@ class FairseqSimulSTAgent(SpeechAgent):
 
     def update_model_encoder(self, states):
         updated_source_len = len(states.units.source)
-        updating_len = updated_source_len - getattr(states, "last_update_source_len", 0)
-        if updating_len == 0 and states.finish_read():
+        update_len = updated_source_len - getattr(states, "last_update_source_len", 0)
+        if update_len == 0 and states.finish_read():
             return
-        print("updating", updating_len, self.expected_frames)
-        finish = (updating_len < self.expected_frames) or states.finish_read()
+        finish = (update_len < self.expected_frames) or states.finish_read()
         src_tokens = self.to_device(
             states.units.source.value.unsqueeze(0)
         )
@@ -329,14 +327,6 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         # T B C
         if hasattr(states, "encoder_states"):
-            new_enc_out = torch.cat([
-                states.encoder_states['encoder_out'][0],
-                encoder_out['encoder_out'][0]
-            ], dim=0)
-            new_enc_emb = torch.cat([
-                states.encoder_states['encoder_embedding'][0],
-                encoder_out['encoder_embedding'][0]
-            ], dim=0)
             new_cif_out = torch.cat([
                 states.encoder_states['cif_out'][0],
                 encoder_out['cif_out'][0]  # might be 0
@@ -345,8 +335,6 @@ class FairseqSimulSTAgent(SpeechAgent):
             states.encoder_states.update({
                 'cif_out': [new_cif_out],
                 'cif_lengths': [new_cif_len],
-                'encoder_out': [new_enc_out],
-                'encoder_embedding': [new_enc_emb]
             })
         else:
             states.encoder_states = encoder_out
@@ -373,51 +361,18 @@ class FairseqSimulSTAgent(SpeechAgent):
 
     def update_states_read(self, states):
         # Happens after a read action.
-        # if not self.full_sentence:
-        #     self.update_model_encoder(states)
-        # if self.full_sentence and states.finish_read():
-        #     self.update_model_encoder_fs(states)
-        self.update_model_encoder(states)
-        if states.finish_read():
-            incr_out = states.encoder_states
-            src_indices = self.to_device(
-                states.units.source.value.unsqueeze(0)
-            )
-            src_lengths = self.to_device(
-                torch.LongTensor([states.units.source.value.size(0)])
-            )
-            full_out = self.model.encoder(src_indices, src_lengths)
-            key = 'encoder_out'
-            try:
-                assert_close(
-                    incr_out[key][0],
-                    full_out[key][0],
-                    atol=1e-3,
-                    rtol=1e-3,
-                )
-            except AssertionError:
-                close = torch.isclose(
-                    incr_out[key][0],
-                    full_out[key][0],
-                    atol=1e-3,
-                    rtol=1e-3
-                ).view(incr_out[key][0].size(0), -1).long().prod(-1)
-                import pdb;
-                pdb.set_trace()
-            # torch.testing.assert_close(
-            #     incr_out['cif_out'][0],
-            #     full_out['cif_out'][0],
-            #     atol=1e-3,
-            #     rtol=1e-3,
-            # )
-            print("ok")
+        if not self.full_sentence:
+            self.update_model_encoder(states)
+        if self.full_sentence and states.finish_read():
+            self.update_model_encoder_fs(states)
 
     def policy(self, states):
         if not hasattr(states, "encoder_states"):
             # first read
-            self.expected_frames = (self.segment_length + self.right_context) * self.stride_ms / SHIFT_SIZE
-            self.speech_segment_size = (self.segment_length + self.right_context) * self.stride_ms + WINDOW_SIZE - SHIFT_SIZE
-            # This is a rare case where source speech finished before we had enough
+            self.expected_frames = (self.segment_length + self.right_context) * self.stride_ms // SHIFT_SIZE
+            self.speech_segment_size = (
+                self.segment_length + self.right_context) * self.stride_ms + WINDOW_SIZE - SHIFT_SIZE
+            # Below is a rare case where source speech finished before we had enough
             # duration to compute a single text state. since simuleval will not call
             # update_states_read if there're no new frames, we'll call it here.
             if states.finish_read():
@@ -429,7 +384,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         dec_len = len(states.units.target)
 
         if (enc_len <= dec_len or self.full_sentence) and not states.finish_read():
-            self.expected_frames = self.segment_length * self.stride_ms / SHIFT_SIZE
+            self.expected_frames = self.segment_length * self.stride_ms // SHIFT_SIZE
             self.speech_segment_size = self.segment_length * self.stride_ms
             # print(f"policy.read {len(states.units.source)} {enc_len} {dec_len}")
             return READ_ACTION
@@ -479,3 +434,42 @@ class FairseqSimulSTAgent(SpeechAgent):
             index = None
 
         return index
+
+    # def update_states_read(self, states):
+    #     from torch.testing import assert_close
+    #     # [DEBUG] Happens after a read action.
+    #     self.update_model_encoder(states)
+    #     if states.finish_read():
+    #         incr_out = states.encoder_states
+    #         src_indices = self.to_device(
+    #             states.units.source.value.unsqueeze(0)
+    #         )
+    #         src_lengths = self.to_device(
+    #             torch.LongTensor([states.units.source.value.size(0)])
+    #         )
+    #         full_out = self.model.encoder(src_indices, src_lengths)
+
+    #         def testing(key='encoder_out', Tdim=0):
+    #             try:
+    #                 assert_close(
+    #                     incr_out[key][0],
+    #                     full_out[key][0],
+    #                     atol=1e-3,
+    #                     rtol=1e-3,
+    #                 )
+    #             except AssertionError:
+    #                 t = incr_out[key][0].size(Tdim)
+    #                 close = torch.isclose(
+    #                     incr_out[key][0],
+    #                     full_out[key][0],
+    #                     atol=1e-3,
+    #                     rtol=1e-3
+    #                 ).transpose(Tdim, 0).view(t, -1).long().prod(-1)
+    #                 print("===========wrong=======", key)
+    #                 import pdb;
+    #                 pdb.set_trace()
+
+    #         testing(key='cif_lengths')
+    #         testing(key='cif_out')
+
+    #         print("ok")
