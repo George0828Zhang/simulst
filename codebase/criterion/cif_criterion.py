@@ -141,7 +141,8 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         ctc_loss = self.compute_ctc_loss(tensors, sample)
 
         # quant loss
-        l_quant, quant_acc = self.compute_quantity_loss(tensors, sample)
+        l_quant, quant_acc = self.compute_quantity_loss(
+            tensors, sample, model.encoder.cif_layer.beta)
 
         # latency loss
         l_latency, latency_factor = self.compute_latency_loss(tensors, sample)
@@ -207,7 +208,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         #     latency_factor = model.latency_control(DAL.mean())
         return DAL.sum(), latency_factor
 
-    def compute_quantity_loss(self, tensors, sample):
+    def compute_quantity_loss(self, tensors, sample, beta=1.0):
         # alpha_sum = tensors["alpha_sum"]
         alpha = tensors["alpha"]
         ctc_lprobs = tensors["ctc_lprobs"]
@@ -248,7 +249,8 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             #     {target_lengths.cpu()} at dim 1, got {boundary.sum(1).cpu()}""")
             quant_targets = boundary.cumsum(1)
 
-        quant_outputs = alpha.masked_fill(encoder_padding_mask, 0).cumsum(1)
+        # quant_outputs = alpha.masked_fill(encoder_padding_mask, 0).cumsum(1)
+        quant_outputs = alpha.cumsum(1) / beta
         l_quant = clipped_l2_loss(
             quant_outputs[boundary],
             quant_targets[boundary],

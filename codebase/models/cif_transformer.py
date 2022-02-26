@@ -17,7 +17,7 @@ from fairseq.models.transformer import (
 )
 from fairseq.modules import (
     LayerNorm,
-    FairseqDropout
+    # FairseqDropout
 )
 from fairseq.incremental_decoding_utils import with_incremental_state
 
@@ -131,7 +131,7 @@ class CIFLayer(nn.Module):
             CausalConvTBC(in_features, hidden_dim, kernel_size=kernel_size),
             LayerNorm(hidden_dim),
             nn.GELU(),
-            FairseqDropout(float(dropout), module_name=self.__class__.__name__),
+            nn.Dropout(float(dropout), inplace=True),
             Linear(hidden_dim, 1, bias=True)
         )
         self.sg_alpha = sg_alpha
@@ -169,12 +169,17 @@ class CIFLayer(nn.Module):
         x = x.transpose(1, 0)
         alpha = alpha.transpose(1, 0).sigmoid().squeeze(-1)
 
+        # apply masking first
+        if encoder_padding_mask is not None:
+            x = x.masked_fill(encoder_padding_mask.unsqueeze(2), 0)
+            alpha = alpha.masked_fill(encoder_padding_mask, 0)
+
         cif_out = cif_function(
             x,
             alpha,
             beta=self.beta,
             tail_thres=self.tail_thres,
-            padding_mask=encoder_padding_mask,
+            # padding_mask=encoder_padding_mask,
             target_lengths=target_lengths,
         )
 
@@ -282,8 +287,6 @@ class CIFEncoder(S2TEmformerEncoder):
         if self.downsample_op is not None:
             src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
-        # cif_out, cif_lengths, alpha_sum, delays = self.cif_layer(
-        # cif_out, cif_lengths, alpha, delays = self.cif_layer(
         cif_out = self.cif_layer(
             src_feats,
             padding_mask,
@@ -294,15 +297,6 @@ class CIFEncoder(S2TEmformerEncoder):
             "encoder_padding_mask": [padding_mask],
             **cif_out
         })
-        # encoder_out.update({
-        #     "encoder_out": [src_feats],
-        #     "encoder_padding_mask": [padding_mask],
-        #     "cif_out": [cif_out],
-        #     "cif_lengths": [cif_lengths],
-        #     # "alpha_sum": [alpha_sum],
-        #     "alpha": [alpha],
-        #     "delays": [delays]
-        # })
         return encoder_out
 
     def infer(self, src_tokens, src_lengths, incremental_state, finish=False):
@@ -336,7 +330,6 @@ class CIFEncoder(S2TEmformerEncoder):
             if len(encoder_out["cif_out"]) == 0
             else [x.index_select(1, new_order) for x in encoder_out["cif_out"]]
         )
-        # for key in ("cif_lengths", "alpha_sum", "delays"):
         for key in ("cif_lengths", "alpha", "delays"):
             new_encoder_out[key] = (
                 []
@@ -416,11 +409,7 @@ class CIFDecoder(TransformerDecoder):
         cif: Optional[Tensor] = None
         cif_lengths: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
-        if encoder_out is not None and len(encoder_out["encoder_out"]) > 0:
-            # enc = encoder_out["encoder_out"][0]
-            # assert (
-            #     enc.size()[1] == bs
-            # ), f"Expected enc.shape == (t, {bs}, c) got {enc.shape}"
+        if encoder_out is not None and len(encoder_out["cif_out"]) > 0:
             cif = encoder_out["cif_out"][0]
             assert (
                 cif.size()[1] == bs
@@ -466,7 +455,7 @@ class CIFDecoder(TransformerDecoder):
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
 
-        x = self.dropout_module(x)
+        x = self.dropout_module(x, inplace=True)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)

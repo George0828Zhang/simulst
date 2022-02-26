@@ -123,20 +123,25 @@ class S2TEmformerEncoder(FairseqEncoder):
         # Step 2. add padding and positions
         # T B C -> B C T
         x = x.permute(1, 2, 0)
-        # right-padding
-        x = F.pad(x, (0, self.right_context))
         # add position
-        x = x + self.embed_positions(x)
+        x += self.embed_positions(x)
         # B C T -> B T C
         x = x.transpose(2, 1)
-        x = self.dropout_module(x)
+        x = self.dropout_module(x, inplace=True)
+
+        # mask
+        encoder_padding_mask = lengths_to_padding_mask(input_lengths)
+        x = x.masked_fill_(encoder_padding_mask.unsqueeze(2), 0)
+        # right-padding
+        x = F.pad(x, (0, 0, 0, self.right_context))
 
         # Step 3. emformer forward
         assert x.size(1) == input_lengths.max().item() + self.right_context
         x, out_lengths, encoder_states = self.emformer_blocks(x, input_lengths)
+        # assume subsequent modules will respect the mask
+        # x = x.masked_fill_(encoder_padding_mask.unsqueeze(2), 0)
         # B T C -> T B C
         x = x.transpose(0, 1)
-        encoder_padding_mask = lengths_to_padding_mask(out_lengths)
 
         assert (out_lengths == input_lengths).all()
         return {
@@ -177,13 +182,13 @@ class S2TEmformerEncoder(FairseqEncoder):
 
         # T B C -> B C T
         x = x.permute(1, 2, 0)
-        # right-padding
-        if finish:
-            x = F.pad(x, (0, self.right_context))
         # add position
         x = x + self.embed_positions(x, incremental_state)
         # B C T -> B T C
         x = x.transpose(2, 1)
+        # right-padding
+        if finish:
+            x = F.pad(x, (0, 0, 0, self.right_context))
 
         block_rc_len = input_lengths
         saved_state = self._get_input_buffer(incremental_state)
