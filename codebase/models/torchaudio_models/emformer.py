@@ -144,7 +144,7 @@ class _EmformerAttention(torch.nn.Module):
         attention_probs = torch.nn.functional.softmax(
             attention_weights_float, dim=-1, dtype=torch.float32).type_as(attention_weights)
 
-        return torch.nn.functional.dropout(attention_probs, p=float(self.dropout), training=self.training)
+        return torch.nn.functional.dropout(attention_probs, p=float(self.dropout), training=self.training, inplace=True)
 
     def _forward_impl(
         self,
@@ -364,7 +364,7 @@ class _EmformerLayer(torch.nn.Module):
             tanh_on_mem=tanh_on_mem,
             negative_inf=negative_inf,
         )
-        self.dropout = torch.nn.Dropout(dropout)
+        self.dropout = torch.nn.Dropout(dropout, inplace=True)
         self.memory_op = torch.nn.AvgPool1d(kernel_size=segment_length, stride=segment_length, ceil_mode=True)
 
         activation_module = _get_activation_module(activation)
@@ -372,9 +372,9 @@ class _EmformerLayer(torch.nn.Module):
             LayerNorm(input_dim),
             torch.nn.Linear(input_dim, ffn_dim),
             activation_module,
-            torch.nn.Dropout(activation_dropout),
+            torch.nn.Dropout(activation_dropout, inplace=True),
             torch.nn.Linear(ffn_dim, input_dim),
-            torch.nn.Dropout(dropout),
+            torch.nn.Dropout(dropout, inplace=True),
         )
 
         def init_linear(m):

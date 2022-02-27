@@ -137,27 +137,29 @@ class CausalConv1dSubsampler(nn.Module):
             out = ((out.float() + padding - c.dilation[0] * (c.kernel_size[0] - 1) - 1) / c.stride[0] + 1).floor().long()
         return out
 
-    def forward(self, src_tokens, src_lengths, incremental_state=None, finish=False):
+    def forward(self, src_tokens, src_lengths, incremental_state=None):
         # bsz, in_seq_len, _ = src_tokens.size()  # B x T x (C x D)
         x = src_tokens.transpose(1, 2).contiguous()  # -> B x (C x D) x T
 
         if incremental_state is not None:
-            saved_state = self.conv_layers[0]._get_input_buffer(incremental_state)
-            prev_len = 0
-            if "prev_feat" in saved_state:
-                prev_len = saved_state["prev_feat"].size(2)
+            prev_len = self.get_prev_len(incremental_state)
             x = x[..., prev_len:]  # only forward new features
+            assert x.size(2) > 0
             src_lengths = (src_lengths - prev_len).clip(min=0)
 
-        if finish and x.size(2) == 0:
-            x = x.new_empty((x.size(0), self.out_channels, 0))
-        else:
-            for conv in self.conv_layers:
-                x = conv(x, incremental_state)
-                x = F.glu(x, dim=1)
+        for conv in self.conv_layers:
+            x = conv(x, incremental_state)
+            x = F.glu(x, dim=1)
         # _, _, out_seq_len = x.size()
         x = x.transpose(1, 2).transpose(0, 1).contiguous()  # -> T x B x (C x D)
         return x, self.get_out_seq_lens_tensor(src_lengths)
+
+    def get_prev_len(self, incremental_state):
+        saved_state = self.conv_layers[0]._get_input_buffer(incremental_state)
+        prev_len = 0
+        if "prev_feat" in saved_state:
+            prev_len = saved_state["prev_feat"].size(2)
+        return prev_len
 
 
 class CausalVGGBlock(nn.Module):

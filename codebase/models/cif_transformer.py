@@ -235,18 +235,22 @@ class CIFLayer(nn.Module):
             x,
             alpha,
             beta=self.beta,
-            tail_thres=self.tail_thres if finish else 1e-6,
+            tail_thres=self.tail_thres if finish else 0,
         )
 
         cif_feats = cif_out["cif_out"][0]  # (B, t, C)
         cif_len = cif_out["cif_lengths"][0]  # (B,)
         tail_weight = cif_out["tail_weights"][0]  # (B,)
         # we now assume B = 1
-        if not finish or (tail_weight.item() + 1e-6 >= self.tail_thres):
-            prev_feat = cif_feats.narrow(1, cif_len.item() - 1, 1)  # (B, 1, C)
+        if not finish:
+            prev_feat = cif_feats[:, cif_len.item() - 1:, :]  # (B, 1, C)
             prev_weight = tail_weight.view(bsz, 1)   # (B, 1)
+            # feat was normalized to beta in cif_function(), unscale to 1 for next segment
+            prev_feat = prev_feat / self.beta
         else:
-            prev_feat = prev_weight = torch.empty(0).type_as(x)
+            # this will trigger error if infer is invoked after finish.
+            prev_feat = None
+            prev_weight = None
 
         cached_state["prev_feat"] = prev_feat
         cached_state["prev_weight"] = prev_weight
@@ -450,7 +454,7 @@ class CIFDecoder(TransformerDecoder):
             x = self.project_in_dim(x)
 
         if positions is not None:
-            x = x + positions
+            x += positions
 
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
@@ -502,7 +506,7 @@ class CIFDecoder(TransformerDecoder):
 
         # highway connection
         if self.highway:
-            x = x + cif
+            x += cif
 
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)

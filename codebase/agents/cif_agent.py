@@ -1,18 +1,16 @@
-import math
 import os
 import logging
 import numpy as np
 import torch
-import torchaudio.compliance.kaldi as kaldi
 from fairseq import utils, checkpoint_utils, tasks
+from fairseq.data.audio.audio_utils import (
+    _get_kaldi_fbank, _get_torchaudio_fbank
+)
 logger = logging.getLogger(__name__)
 
-try:
-    from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
-    from simuleval.agents import SpeechAgent
-    from simuleval.states import ListEntry, SpeechStates
-except ImportError:
-    print("Please install simuleval 'pip install simuleval'")
+from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
+from simuleval.agents import SpeechAgent
+from simuleval.states import ListEntry, SpeechStates
 
 SHIFT_SIZE = 10
 WINDOW_SIZE = 25
@@ -33,11 +31,10 @@ class OnlineFeatureExtractor:
 
         self.sample_rate = args.sample_rate
         self.feature_dim = args.feature_dim
-        self.num_samples_per_shift = int(self.shift_size * self.sample_rate / 1000)
-        self.num_samples_per_window = int(self.window_size * self.sample_rate / 1000)
-        self.len_ms_to_samples = lambda x: x * self.sample_rate / 1000
+        self.num_samples_per_shift = self.shift_size * self.sample_rate // 1000
+        self.num_samples_per_window = self.window_size * self.sample_rate // 1000
+        self.num_samples_diff = self.num_samples_per_window - self.num_samples_per_shift
         self.previous_residual_samples = []
-        self.global_cmvn = args.global_cmvn
 
     def clear_cache(self):
         self.previous_residual_samples = []
@@ -49,46 +46,25 @@ class OnlineFeatureExtractor:
             return
 
         # num_frames is the number of frames from the new segment
-        num_frames = math.floor(
-            (len(samples) - self.len_ms_to_samples(self.window_size - self.shift_size))
-            / self.num_samples_per_shift
-        )
+        num_frames = (len(samples) - self.num_samples_diff) // self.num_samples_per_shift
 
         # the number of frames used for feature extraction
         # including some part of thte previous segment
-        effective_num_samples = int(
-            num_frames * self.len_ms_to_samples(self.shift_size)
-            + self.len_ms_to_samples(self.window_size - self.shift_size)
-        )
+        effective_num_samples = num_frames * self.num_samples_per_shift + self.num_samples_diff
 
         input_samples = samples[:effective_num_samples]
         self.previous_residual_samples = samples[
             num_frames * self.num_samples_per_shift:
         ]
 
-        torch.manual_seed(1)
-        output = kaldi.fbank(
-            torch.FloatTensor(input_samples).unsqueeze(0),
-            num_mel_bins=self.feature_dim,
-            frame_length=self.window_size,
-            frame_shift=self.shift_size,
-            sample_frequency=self.sample_rate
-        ).numpy()
-
-        output = self.transform(output)
+        # to be consistent with extract_fbank_features
+        # in DATA/data_utils.py
+        _waveform = np.array([input_samples], dtype=np.float32)
+        output = _get_kaldi_fbank(_waveform, self.sample_rate, self.feature_dim)
+        if output is None:
+            output = _get_torchaudio_fbank(_waveform, self.sample_rate, self.feature_dim)
 
         return torch.from_numpy(output)
-
-    def transform(self, input):
-        if self.global_cmvn is None:
-            return input
-
-        mean = self.global_cmvn["mean"]
-        std = self.global_cmvn["std"]
-
-        x = np.subtract(input, mean)
-        x = np.divide(x, std)
-        return x.astype(np.float32)
 
 
 class TensorListEntry(ListEntry):
@@ -311,6 +287,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         if update_len == 0 and states.finish_read():
             return
         finish = (update_len < self.expected_frames) or states.finish_read()
+        logger.debug(f"updating {update_len} expect {self.expected_frames} {'finish' if finish else ''}")
         src_tokens = self.to_device(
             states.units.source.value.unsqueeze(0)
         )
@@ -327,6 +304,14 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         # T B C
         if hasattr(states, "encoder_states"):
+            # new_alpha = torch.cat([
+            #     states.encoder_states['alpha'][0],
+            #     encoder_out['alpha'][0]  # might be 0
+            # ], dim=1)
+            # new_enc_out = torch.cat([
+            #     states.encoder_states['encoder_out'][0],
+            #     encoder_out['encoder_out'][0]  # might be 0
+            # ], dim=0)
             new_cif_out = torch.cat([
                 states.encoder_states['cif_out'][0],
                 encoder_out['cif_out'][0]  # might be 0
@@ -335,6 +320,8 @@ class FairseqSimulSTAgent(SpeechAgent):
             states.encoder_states.update({
                 'cif_out': [new_cif_out],
                 'cif_lengths': [new_cif_len],
+                # 'encoder_out': [new_enc_out],
+                # 'alpha': [new_alpha]
             })
         else:
             states.encoder_states = encoder_out
@@ -386,10 +373,10 @@ class FairseqSimulSTAgent(SpeechAgent):
         if (enc_len <= dec_len or self.full_sentence) and not states.finish_read():
             self.expected_frames = self.segment_length * self.stride_ms // SHIFT_SIZE
             self.speech_segment_size = self.segment_length * self.stride_ms
-            # print(f"policy.read {len(states.units.source)} {enc_len} {dec_len}")
+            logger.debug(f"policy.read {len(states.units.source)} {enc_len} {dec_len}")
             return READ_ACTION
         else:
-            # print(f"policy.write {len(states.units.source)} {enc_len} {dec_len}")
+            logger.debug(f"policy.write {len(states.units.source)} {enc_len} {dec_len}")
             tgt_indices = self.to_device(
                 torch.LongTensor(
                     [self.model.decoder.dictionary.eos()]
@@ -466,9 +453,11 @@ class FairseqSimulSTAgent(SpeechAgent):
     #                     rtol=1e-3
     #                 ).transpose(Tdim, 0).view(t, -1).long().prod(-1)
     #                 print("===========wrong=======", key)
-    #                 import pdb;
+    #                 print(close)
+    #                 import pdb
     #                 pdb.set_trace()
 
+    #         testing(key='encoder_out')
     #         testing(key='cif_lengths')
     #         testing(key='cif_out')
 

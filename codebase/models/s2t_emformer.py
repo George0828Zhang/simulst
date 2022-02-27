@@ -43,6 +43,7 @@ class S2TEmformerEncoder(FairseqEncoder):
         self.dropout_module = FairseqDropout(
             p=args.dropout, module_name=self.__class__.__name__
         )
+        self.embed_dim = args.encoder_embed_dim
         self.embed_scale = math.sqrt(args.encoder_embed_dim)
         if args.no_scale_embedding:
             self.embed_scale = 1.0
@@ -175,17 +176,21 @@ class S2TEmformerEncoder(FairseqEncoder):
 
     def infer(self, src_tokens, src_lengths, incremental_state, finish=False):
         assert src_tokens.size(0) == 1, "batched streaming not supported yet"
+        update_len = src_tokens.size(1) - self.subsample.get_prev_len(incremental_state)
+        if finish and update_len == 0:
+            x = src_tokens.new_empty((src_tokens.size(0), 0, self.embed_dim))
+            input_lengths = src_lengths * 0
+        else:
+            x, input_lengths = self.subsample(
+                src_tokens, src_lengths, incremental_state)
+            x = self.embed_scale * x
 
-        x, input_lengths = self.subsample(
-            src_tokens, src_lengths, incremental_state, finish=finish)
-        x = self.embed_scale * x
-
-        # T B C -> B C T
-        x = x.permute(1, 2, 0)
-        # add position
-        x = x + self.embed_positions(x, incremental_state)
-        # B C T -> B T C
-        x = x.transpose(2, 1)
+            # T B C -> B C T
+            x = x.permute(1, 2, 0)
+            # add position
+            x = x + self.embed_positions(x, incremental_state)
+            # B C T -> B T C
+            x = x.transpose(2, 1)
         # right-padding
         if finish:
             x = F.pad(x, (0, 0, 0, self.right_context))

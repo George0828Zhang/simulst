@@ -35,11 +35,6 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -c|--cmvn)
-      CMVN="$2"
-      shift # past argument
-      shift # past value
-      ;;
     *)    # unknown option
       POSITIONAL+=("$1") # save it in an array for later
       shift # past argument
@@ -50,23 +45,22 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
-AGENT=${AGENT:-"./agents/waitk_fixed_predecision_agent.py"}
+AGENT=${AGENT:-"../codebase/agents/cif_agent.py"}
 EXP=${EXP:-"../exp"}
 SRC_FILE=${SRC_FILE:-"./data/dev.wav_list"}
 TGT_FILE=${TGT_FILE:-"./data/dev.de"}
-CMVN=${CMVN:-"./data/gcmvn.npz"}
 
 source ${EXP}/data_path.sh
 
 CHECKPOINT=${EXP}/checkpoints/${MODEL}/checkpoint_best.pt
-SPM_PREFIX=${DATA}/spm_unigram8000_st
+SPM_PREFIX=${DATA}/spm_unigram4096_st
 
 PORT=12345
 WORKERS=2
 BLEU_TOK=13a
 UNIT=word
 DATANAME=$(basename $(dirname ${DATA}))
-OUTPUT=${DATANAME}_${TGT}-results/${MODEL}.test_${WAITK}
+OUTPUT=${DATANAME}_${TGT}-results/${MODEL}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]]; then
@@ -75,27 +69,22 @@ if [[ ${TGT} == "zh" ]]; then
     NO_SPACE="--no-space"
 fi
 
-simuleval \
+script=$(which simuleval)
+python ${script} \
     --agent ${AGENT} \
     --user-dir ${USERDIR} \
     --source ${SRC_FILE} \
     --target ${TGT_FILE} \
     --data-bin ${DATA} \
     --config config_st.yaml \
-    --global-stats ${CMVN} \
     --model-path ${CHECKPOINT} \
     --tgt-splitter-path ${SPM_PREFIX}.model \
     --output ${OUTPUT} \
-    --chunked-read 9 \
-    --overlap 1 \
-    --incremental-encoder \
     --sacrebleu-tokenizer ${BLEU_TOK} \
     --eval-latency-unit ${UNIT} \
-    --segment-type ${UNIT} \
+    --commit-unit ${UNIT} \
     ${NO_SPACE} \
     --scores \
-    --test-waitk ${WAITK} \
     --port ${PORT} \
     --workers ${WORKERS} \
     ${POSITIONAL[@]}
-    # --full-sentence \
