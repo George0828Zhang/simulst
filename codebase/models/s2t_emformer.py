@@ -325,4 +325,5 @@ def s2t_emformer_s(args):
     args.segment_right_context = getattr(args, "segment_right_context", 32)
     args.max_memory_size = getattr(args, "max_memory_size", 5)  # 3 ~ 5 is good
     args.tanh_on_mem = getattr(args, "tanh_on_mem", True)  # if False, hard clipping to +-10 is used.
+    args.activation_fn = getattr(args, "activation_fn", "gelu")
     s2t_transformer_s(args)
