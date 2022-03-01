@@ -51,7 +51,7 @@ class MonotonicAttention(MultiheadAttention):
 
         self.noise_type = args.noise_type
         self.noise_mean = args.noise_mean
-        self.noise_var = args.noise_var
+        self.noise_std = args.noise_var ** 0.5
 
         self.energy_bias_init = args.energy_bias_init
         self.energy_bias = (
@@ -127,7 +127,7 @@ class MonotonicAttention(MultiheadAttention):
         if key_padding_mask is not None:
             energy = energy.masked_fill(
                 key_padding_mask.unsqueeze(1).to(torch.bool),
-                - float("inf")
+                -1e4 if energy.dtype == torch.float16 else -1e8
             )
 
         return energy
@@ -144,7 +144,7 @@ class MonotonicAttention(MultiheadAttention):
         p_choose = learnable_p_choose(
             monotonic_energy,
             self.noise_mean,
-            self.noise_var,
+            self.noise_std,
             self.training
         )
         return p_choose
@@ -287,7 +287,10 @@ class MonotonicAttention(MultiheadAttention):
                 "soft"
             )
             beta = torch.nn.functional.softmax(
-                soft_energy.masked_fill(beta_mask, -float("inf")), dim=-1
+                soft_energy.masked_fill(
+                    beta_mask,
+                    -1e4 if soft_energy.dtype == torch.float16 else -1e8
+                ), dim=-1
             )
             # It could happen that a head doesn't move at all
             beta = beta.masked_fill(monotonic_step.eq(0).unsqueeze(1), 0)
@@ -314,11 +317,11 @@ class MonotonicAttention(MultiheadAttention):
         assert key is not None
 
         # 1. compute stepwise probability
-        p_choose = self.p_choose_from_qk(query, key, key_padding_mask)
+        p_choose = self.p_choose(query, key, key_padding_mask)
 
         # 2. compute expected_alignment
         alpha = expected_alignment_from_p_choose(
-            p_choose,
+            p_choose.float(),  # prevents latency loss from nan
             key_padding_mask,
             eps=self.eps,
         )
@@ -378,13 +381,8 @@ class MonotonicAttention(MultiheadAttention):
             assert not key_padding_mask[:, 0].any(), (
                 "Only right padding is supported."
             )
-            key_padding_mask = (
-                key_padding_mask
-                .unsqueeze(1)
-                .expand([bsz, self.num_heads, src_len])
-                .contiguous()
-                .view(-1, src_len)
-            )
+            key_padding_mask = torch.repeat_interleave(
+                key_padding_mask, self.num_heads, 0)
 
         if incremental_state is not None:
             # Inference

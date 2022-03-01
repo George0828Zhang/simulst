@@ -157,13 +157,13 @@ class MMADecoder(TransformerDecoder):
         )
         attn = None
         inner_states = [x]
-        # attn_list: List[Optional[Dict[str, Tensor]]] = []
+        attn_list: List[Optional[Dict[str, Tensor]]] = []
 
         # p_choose = torch.tensor([1.0])
 
         for i, layer in enumerate(self.layers):
 
-            x, layer_attn, _ = layer(
+            x, attn, _ = layer(
                 x=x,
                 encoder_out=encoder_outs,
                 encoder_padding_mask=encoder_padding_mask,
@@ -174,7 +174,7 @@ class MMADecoder(TransformerDecoder):
             )
 
             inner_states.append(x)
-            # attn_list.append(layer_attn)
+            attn_list.append(attn)  # a dict with alpha, beta and p_choose
 
             if incremental_state is not None:
                 if_online = incremental_state.get("online", False)
@@ -189,11 +189,17 @@ class MMADecoder(TransformerDecoder):
                         # otherwise there will be duplicated saved_state
                         self.clear_cache(incremental_state, i + 1)
 
-                        return x, {"action": 0, "attn": [attn], "inner_states": inner_states}
+                        return x, {"action": 0, "attn": [None], "inner_states": inner_states}
 
         x = self.post_attention(x)
 
-        return x, {"action": 1, "attn": [attn], "inner_states": inner_states}
+        return x, {
+            "action": 1,
+            "attn": [None],
+            "attn_list": attn_list,
+            "encoder_out": encoder_out,
+            "encoder_padding_mask": encoder_padding_mask
+        }
 
 
 @register_model("mma_model")

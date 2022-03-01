@@ -102,23 +102,19 @@ def waitk_p_choose(
 def learnable_p_choose(
     energy,
     noise_mean: float = 0.0,
-    noise_var: float = 0.0,
+    noise_std: float = 0.0,
     training: bool = True
 ):
     """
     Calculating step wise prob for reading and writing
-    1 to read, 0 to write
+    0 to read, 1 to write
     energy: bsz, tgt_len, src_len
     """
 
     noise = 0
     if training:
         # add noise here to encourage discretness
-        noise = (
-            torch.normal(noise_mean, noise_var, energy.size())
-            .type_as(energy)
-            .to(energy.device)
-        )
+        noise = torch.randn_like(energy) * noise_std + noise_mean
 
     p_choose = torch.sigmoid(energy + noise)
 
