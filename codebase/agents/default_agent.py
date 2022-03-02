@@ -203,7 +203,6 @@ class FairseqSimulSTAgent(SpeechAgent):
         model_args = state["cfg"]["model"]
         model_args.load_pretrained_encoder_from = None
         model_args.load_pretrained_decoder_from = None
-        model_args.simul_attn_type = model_args.simul_type
         model_args.simul_type = None
         self.model = task.build_model(model_args)
         self.model.load_state_dict(state["model"], strict=True)
@@ -372,10 +371,10 @@ class FairseqSimulSTAgent(SpeechAgent):
             ).unsqueeze(0)
         )
 
-        states.dec_incremental_states["steps"] = {
-            "src": enc_len,
-            "tgt": 1 + len(states.units.target),
-        }
+        # states.dec_incremental_states["steps"] = {
+        #     "src": enc_len,
+        #     "tgt": 1 + len(states.units.target),
+        # }
 
         states.dec_incremental_states["online"] = not states.finish_read()
 

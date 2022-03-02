@@ -276,7 +276,7 @@ class MonotonicAttention(MultiheadAttention):
 
         # 4. Compute Beta
         if self.soft_attention:
-            beta_mask = torch.arange(src_len).expand_as(alpha).gt(monotonic_step).unsqueeze(1)
+            beta_mask = torch.arange(src_len, device=alpha.device).expand_as(alpha).gt(monotonic_step).unsqueeze(1)
             # If it's soft attention just do softmax on current context
             soft_energy = self.energy_from_qk(
                 query,
@@ -450,7 +450,7 @@ class MonotonicAttention(MultiheadAttention):
         input_buffer = self._get_monotonic_buffer(incremental_state)
         if input_buffer is not None:
             for k in input_buffer.keys():
-                if input_buffer[k] is not None:
+                if input_buffer[k] is not None and isinstance(input_buffer[k], Tensor):
                     input_buffer[k] = input_buffer[k].index_select(0, new_order)
             incremental_state = self._set_monotonic_buffer(incremental_state, input_buffer)
         return incremental_state
@@ -525,8 +525,18 @@ class WaitKAttention(
         assert query is not None
         assert key is not None
 
+        tgt_len = query.size(0)  # T B C
+        if incremental_state is not None:
+            saved_state = self._get_monotonic_buffer(incremental_state)
+            if "tgt_len" in saved_state:
+                prev_tgt_len = saved_state["tgt_len"]
+                assert prev_tgt_len is not None
+                tgt_len += prev_tgt_len
+            saved_state["tgt_len"] = tgt_len
+            self._set_monotonic_buffer(incremental_state, saved_state)
+
         p_choose = waitk_p_choose(
-            tgt_len=query.size(0),
+            tgt_len=tgt_len,
             src_len=key.size(0),
             bsz=query.size(1) * self.num_heads,
             waitk_lagging=self.waitk_lagging,
@@ -534,7 +544,7 @@ class WaitKAttention(
             incremental_state=incremental_state,
         )
 
-        return p_choose.to(query)
+        return p_choose.type_as(query)
 
 
 @register_monotonic_attention("chunkwise")
