@@ -102,7 +102,7 @@ def waitk_p_choose(
 def learnable_p_choose(
     energy,
     noise_mean: float = 0.0,
-    noise_std: float = 0.0,
+    noise_std: float = 1.0,
     training: bool = True
 ):
     """

@@ -46,10 +46,9 @@ class MonotonicAttention(MultiheadAttention):
 
         self.soft_attention = False
 
-        self.eps = getattr(args, "attention_eps", True)
-        self.mass_preservation = getattr(args, "mass_preservation", True)
+        self.eps = args.attention_eps
+        self.mass_preservation = args.mass_preservation
 
-        self.noise_type = args.noise_type
         self.noise_mean = args.noise_mean
         self.noise_std = args.noise_var ** 0.5
 
@@ -78,8 +77,6 @@ class MonotonicAttention(MultiheadAttention):
                             help='Variance of discretness noise')
         parser.add_argument('--noise-mean', type=float, default=0.0,
                             help='Mean of discretness noise')
-        parser.add_argument('--noise-type', type=str, default="flat",
-                            help='Type of discretness noise')
         parser.add_argument('--energy-bias', action="store_true",
                             default=False,
                             help='Bias for energy')

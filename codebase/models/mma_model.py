@@ -189,7 +189,13 @@ class MMADecoder(TransformerDecoder):
                         # otherwise there will be duplicated saved_state
                         self.clear_cache(incremental_state, i + 1)
 
-                        return x, {"action": 0, "attn": [None], "inner_states": inner_states}
+                        return x, {
+                            "action": 0,
+                            "attn": [None],
+                            "attn_list": attn_list,
+                            "encoder_out": encoder_out,
+                            "inner_states": inner_states
+                        }
 
         x = self.post_attention(x)
 
@@ -235,11 +241,10 @@ class MMAModel(S2TEmformerModel):
 )
 def ssnt_model_s(args):
     # args.activation_fn = getattr(args, "activation_fn", "gelu")
-    args.energy_bias = True
+    args.energy_bias = False
     args.mass_preservation = True
     args.noise_var = getattr(args, "noise_var", 1.0)
     args.noise_mean = getattr(args, "noise_mean", 0.0)
-    args.noise_type = getattr(args, "noise_type", "flat")
-    args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
+    # args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
     args.attention_eps = getattr(args, "attention_eps", 1e-6)
     s2t_emformer_s(args)

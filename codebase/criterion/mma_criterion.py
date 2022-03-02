@@ -56,6 +56,10 @@ class MMACriterionConfig(
         default=0,
         metadata={"help": "Add latency loss after certain steps"},
     )
+    ms_per_frame_shift: float = field(
+        default=10,
+        metadata={"help": "The milliseconds per frame shift used to compute the delay."},
+    )
 
 
 @register_criterion(
@@ -75,6 +79,7 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         latency_var_type,
         latency_gather_method,
         latency_update_after,
+        ms_per_frame_shift
     ):
         super().__init__(
             task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy
@@ -87,6 +92,7 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         self.latency_var_type = latency_var_type
         self.latency_gather_method = latency_gather_method
         self.latency_update_after = latency_update_after
+        self.ms_per_frame_shift = ms_per_frame_shift
 
     def forward(self, model, sample, reduce=True):
         net_output = model(**sample["net_input"])
@@ -154,24 +160,21 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
 
         expected_delays = torch.sum(steps * alpha_all, dim=-1)
 
-        target_padding_mask = (
-            model.get_targets(sample, net_output)
-            .eq(self.padding_idx)
-            .unsqueeze(1)
-            .expand(bsz, num_layers * num_heads, tgt_len)
-            .contiguous()
-            .view(-1, tgt_len)
-        )
+        target_lengths = sample["target_lengths"]
+        target_padding_mask = sample["target"] == self.padding_idx
 
-        src_lengths = (
-            sample["net_input"]["src_lengths"]
-            .unsqueeze(1)
-            .expand(bsz, num_layers * num_heads)
-            .contiguous()
-            .view(-1)
-        )
+        input_lengths = sample["net_input"]["src_lengths"]
+        # if net_output[-1]["encoder_padding_mask"] is not None:
+        encoder_lengths = (~net_output[-1]["encoder_padding_mask"]).sum(-1)
+
+        def expand(t):
+            return torch.repeat_interleave(t, num_layers * num_heads, 0)
+
         expected_latency = LATENCY_METRICS[self.latency_avg_type](
-            expected_delays, src_lengths, None, target_padding_mask=target_padding_mask
+            expected_delays,
+            expand(encoder_lengths),
+            expand(target_lengths),
+            target_padding_mask=expand(target_padding_mask)
         )
 
         # 2.1 average expected latency of heads
@@ -188,8 +191,7 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         else:
             raise NotImplementedError
 
-        expected_latency = expected_latency.sum()
-        avg_loss = self.latency_avg_weight * expected_latency
+        avg_loss = self.latency_avg_weight * expected_latency.sum()
 
         # 2.2 variance of expected delays
         expected_delays_var = (
@@ -201,7 +203,9 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         # 3. Final loss
         latency_loss = avg_loss + var_loss
 
-        return latency_loss, expected_latency, expected_delays_var
+        # renormalize delays to ms
+        expected_latency = expected_latency * (input_lengths / encoder_lengths * self.ms_per_frame_shift)
+        return latency_loss, expected_latency.sum().data, expected_delays_var
 
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:
