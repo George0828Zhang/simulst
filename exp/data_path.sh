@@ -8,4 +8,5 @@ USERDIR=`realpath ../codebase`
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 . ~/envs/apex/bin/activate
 
-export NUMEXPR_MAX_THREADS=4
+export NUMEXPR_MAX_THREADS=0
+export WORKERS=0

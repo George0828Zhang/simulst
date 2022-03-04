@@ -3,6 +3,7 @@
 import logging
 import math
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from typing import Optional, Dict
@@ -17,14 +18,15 @@ from fairseq.modules import (
 )
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.data.data_utils import lengths_to_padding_mask
+from fairseq.models.transformer import Embedding
 from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerEncoder,
     S2TTransformerModel,
     s2t_transformer_s
 )
 from codebase.models.s2t_transformer import make_conv_pos
-from codebase.models.causal_conv import CausalConv1dSubsampler
 from codebase.models.torchaudio_models import Emformer
+from codebase.modules.causal_conv import CausalConv1dSubsampler
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 #################################################
 @with_incremental_state
 class S2TEmformerEncoder(FairseqEncoder):
-    def __init__(self, args):
+    def __init__(self, args, dictionary=None):
         super().__init__(args)
 
         self.encoder_freezing_updates = args.encoder_freezing_updates
@@ -87,6 +89,19 @@ class S2TEmformerEncoder(FairseqEncoder):
             weight_init_scale_strategy='depthwise',
             normalize_before=args.encoder_normalize_before
         )
+
+        self.ctc_layer = None
+        if getattr(args, "ctc_layer", False):
+            assert dictionary is not None
+            output_projection = nn.Linear(
+                args.encoder_embed_dim,
+                len(dictionary),
+                bias=False,
+            )
+            nn.init.normal_(
+                output_projection.weight, mean=0, std=args.encoder_embed_dim ** -0.5
+            )
+            self.ctc_layer = output_projection
 
     def conv_layer_stride(self):
         stride = 1
@@ -141,6 +156,11 @@ class S2TEmformerEncoder(FairseqEncoder):
         x, out_lengths, encoder_states = self.emformer_blocks(x, input_lengths)
         # assume subsequent modules will respect the mask
         # x = x.masked_fill_(encoder_padding_mask.unsqueeze(2), 0)
+
+        ctc_logits = None
+        if self.ctc_layer is not None:
+            ctc_logits = self.ctc_layer(x)
+
         # B T C -> T B C
         x = x.transpose(0, 1)
 
@@ -152,6 +172,7 @@ class S2TEmformerEncoder(FairseqEncoder):
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
+            "ctc_logits": [ctc_logits] if ctc_logits is not None else []
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -237,6 +258,10 @@ class S2TEmformerEncoder(FairseqEncoder):
             x = torch.cat((x, rc), dim=1)
             out_lengths = out_lengths + rc_lengths
 
+        ctc_logits = None
+        if self.ctc_layer is not None:
+            ctc_logits = self.ctc_layer(x)
+
         # B T C -> T B C
         x = x.transpose(0, 1)
         encoder_padding_mask = lengths_to_padding_mask(out_lengths)
@@ -248,6 +273,7 @@ class S2TEmformerEncoder(FairseqEncoder):
             "encoder_states": encoder_states,
             "src_tokens": [],
             "src_lengths": [],
+            "ctc_logits": [ctc_logits] if ctc_logits is not None else []
         }
 
 
@@ -296,10 +322,15 @@ class S2TEmformerModel(S2TTransformerModel):
             action="store_true",
             help="whether to use tanh for memory bank vectors.",
         )
+        parser.add_argument(
+            "--ctc-layer",
+            action="store_true",
+            help="whether to add a ctc prediction layer.",
+        )
 
     @classmethod
-    def build_encoder(cls, args):
-        encoder = S2TEmformerEncoder(args)
+    def build_encoder(cls, args, task):
+        encoder = S2TEmformerEncoder(args, task.source_dictionary)
 
         if getattr(args, "load_pretrained_encoder_from", None) is not None:
             encoder = checkpoint_utils.load_pretrained_component_from_model(
@@ -310,6 +341,41 @@ class S2TEmformerModel(S2TTransformerModel):
                 f"{args.load_pretrained_encoder_from}"
             )
         return encoder
+
+    @classmethod
+    def build_model(cls, args, task):
+        """Build a new model instance."""
+
+        # make sure all arguments are present in older models
+        s2t_emformer_s(args)
+
+        def build_embedding(dictionary, embed_dim):
+            num_embeddings = len(dictionary)
+            padding_idx = dictionary.pad()
+            return Embedding(num_embeddings, embed_dim, padding_idx)
+
+        decoder_embed_tokens = build_embedding(
+            task.target_dictionary, args.decoder_embed_dim
+        )
+        encoder = cls.build_encoder(args, task)
+        decoder = cls.build_decoder(args, task, decoder_embed_tokens)
+        return cls(encoder, decoder)
+
+    def forward(self, src_tokens, src_lengths, prev_output_tokens):
+        """
+        The forward method inherited from the base class has a **kwargs
+        argument in its input, which is not supported in torchscript. This
+        method overwrites the forward method definition without **kwargs.
+        """
+        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths)
+        logits, extra = self.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
+        if extra is None:
+            extra = {}
+        extra["ctc_logits"] = encoder_out["ctc_logits"]
+        extra["encoder_padding_mask"] = encoder_out["encoder_padding_mask"]
+        return logits, extra
 
 
 @register_model_architecture(
@@ -323,7 +389,7 @@ def s2t_emformer_s(args):
     args.segment_length = getattr(args, "segment_length", 64)
     args.segment_left_context = getattr(args, "segment_left_context", 128)
     args.segment_right_context = getattr(args, "segment_right_context", 32)
-    args.max_memory_size = getattr(args, "max_memory_size", 5)  # 3 ~ 5 is good
+    args.max_memory_size = getattr(args, "max_memory_size", 10)  # 3 ~ 5 is good
     args.tanh_on_mem = getattr(args, "tanh_on_mem", True)  # if False, hard clipping to +-10 is used.
     args.activation_fn = getattr(args, "activation_fn", "gelu")
     s2t_transformer_s(args)

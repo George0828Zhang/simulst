@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TASK=seq2seq_asr
+TASK=ctc_s2s_asr
 . ./data_path.sh
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
@@ -7,26 +7,28 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --train-subset train_st \
     --valid-subset dev_st \
     --skip-invalid-size-inputs-valid-test \
-    --max-tokens 80000 \
+    --max-tokens 40000 \
     --update-freq 4 \
     --task speech_to_text_infer --do-asr \
     --inference-config-yaml infer_asr.yaml \
-    --arch s2t_transformer_convpos_s --share-decoder-input-output-embed \
+    --arch s2t_emformer_s --ctc-layer \
+    --share-decoder-input-output-embed \
     --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
-    --criterion label_smoothed_cross_entropy --label-smoothing 0.1 --report-accuracy \
-    --clip-norm 2 --weight-decay 1e-4 \
+    --criterion joint_ctc_criterion --label-smoothing 0.1 --report-accuracy \
+    --clip-norm 10 --weight-decay 1e-4 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 5e-4 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 --warmup-init-lr 1e-7 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
-    --no-epoch-checkpoints \
-    --wandb-project simulst \
+    --wandb-project simulst-cif-final \
     --best-checkpoint-metric wer \
-    --save-interval-updates 500 \
-    --keep-interval-updates 1 \
+    --validate-after-updates 10000 \
+    --validate-interval 2 \
+    --save-interval 1 \
+    --keep-last-epochs 1 \
     --keep-best-checkpoints 5 \
-    --patience 50 \
+    --patience 25 \
     --log-format simple --log-interval 50 \
     --num-workers 4 \
-    --fp16 \
-    --seed 1
+    --fp16 --fp16-init-scale 1 --memory-efficient-fp16 \
+    --seed 999

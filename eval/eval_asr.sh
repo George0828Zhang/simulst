@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-TASK=ctc_asr
-SPLIT=$1 #dev #tst-COMMON
-EXP=../exp
+TASK=ctc_s2s_asr
+SPLIT=tst-COMMON
+EXP=$(realpath ../exp)
 . ${EXP}/data_path.sh
-DATA=${DATA_ROOT}/joint
-CONF=$DATA/config_asr.yaml
+CONF=$DATA/config_st.yaml
+INF=${EXP}/infer_asr.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
 RESULTS=asr.${SPLIT}.results/
 AVG=true
@@ -21,23 +21,20 @@ else
 fi
 
 mkdir -p ${RESULTS}
-for lang in de ; do
-    echo "# evaluating lang: ${lang}"
-    tsv=${DATA}/${SPLIT}_${lang}_asr.tsv
-    tail +2 ${tsv} | cut -f2 > ${RESULTS}/feats.${lang}
-    tail +2 ${tsv} | cut -f4 > ${RESULTS}/refs.${lang}
 
-    cat ${RESULTS}/feats.${lang} | \
-    python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
+tsv=${DATA}/${SPLIT}_st.tsv
+tail +2 ${tsv} | cut -f2 > ${RESULTS}/feats.${TGT}
+tail +2 ${tsv} | cut -f4 > ${RESULTS}/refs.${TGT}
+cat ${RESULTS}/feats.${TGT} | \
+    python interactive.py ${DATA} --user-dir ${USERDIR} \
         --config-yaml ${CONF} \
-        --gen-subset ${SPLIT}_de_asr,${SPLIT}_es_asr \
+        --gen-subset ${SPLIT}_st \
         --task speech_to_text_infer --do-asr \
-        --buffer-size 128 --batch-size 128 \
-        --inference-config-yaml infer_asr.yaml \
+        --buffer-size 1500 --batch-size 32 \
+        --inference-config-yaml ${INF} \
         --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
-        --model-overrides '{"load_pretrained_encoder_from": None}' \
         ${EXTRAARGS} | \
-    grep -E "H-[0-9]+" | \
-    cut -f3 > ${RESULTS}/hyps.${lang}
-    wer ${RESULTS}/refs.${lang} ${RESULTS}/hyps.${lang} | tee ${RESULTS}/score.${lang}
-done
+    grep -E "D-[0-9]+" | \
+    cut -f3 > ${RESULTS}/hyps.${TGT}
+script=$(which wer)
+python ${script} ${RESULTS}/refs.${TGT} ${RESULTS}/hyps.${TGT} | tee ${RESULTS}/interactive_score.txt
