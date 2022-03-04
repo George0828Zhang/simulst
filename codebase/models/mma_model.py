@@ -20,9 +20,6 @@ from codebase.models.s2t_emformer import (
     S2TEmformerModel,
     s2t_emformer_s
 )
-from codebase.models.common import (
-    scale_init
-)
 from codebase.modules import (
     build_monotonic_attention
 )
@@ -56,7 +53,6 @@ class MMADecoderLayer(TransformerDecoderLayer):
 class MMADecoder(TransformerDecoder):
     def __init__(self, args, dictionary, embed_tokens, output_projection=None):
         super().__init__(args, dictionary, embed_tokens, False, output_projection)
-        scale_init(self)
 
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return MMADecoderLayer(args, no_encoder_attn)
@@ -240,11 +236,8 @@ class MMAModel(S2TEmformerModel):
     "mma_model", "mma_model_s"
 )
 def ssnt_model_s(args):
-    # args.activation_fn = getattr(args, "activation_fn", "gelu")
-    args.energy_bias = False
-    args.mass_preservation = True
-    args.noise_var = getattr(args, "noise_var", 1.0)
+    args.noise_var = getattr(args, "noise_var", 2.0)
     args.noise_mean = getattr(args, "noise_mean", 0.0)
-    # args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
-    args.attention_eps = getattr(args, "attention_eps", 1e-6)
+    args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
+    args.attention_eps = getattr(args, "attention_eps", 1e-10)
     s2t_emformer_s(args)

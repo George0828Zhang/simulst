@@ -124,9 +124,9 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
-            "latency": expected_latency,
-            "delays_var": expected_delays_var,
-            "latency_loss": latency_loss,
+            "latency": expected_latency.data,
+            "delays_var": expected_delays_var.data,
+            "latency_loss": latency_loss.data,
         }
 
         if self.report_accuracy:
@@ -136,10 +136,6 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         return loss, sample_size, logging_output
 
     def compute_latency_loss(self, model, sample, net_output):
-        assert (
-            net_output[-1]["encoder_padding_mask"] is None
-            or not net_output[-1]["encoder_padding_mask"][:, 0].any()
-        ), "Only right padding on source is supported."
         # 1. Obtain the expected alignment
         alpha_list = [item["alpha"] for item in net_output[1]["attn_list"]]
         num_layers = len(alpha_list)
@@ -164,8 +160,11 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         target_padding_mask = sample["target"] == self.padding_idx
 
         input_lengths = sample["net_input"]["src_lengths"]
-        # if net_output[-1]["encoder_padding_mask"] is not None:
-        encoder_lengths = (~net_output[-1]["encoder_padding_mask"]).sum(-1)
+        encoder_padding_mask = net_output[-1]["encoder_padding_mask"]
+        if isinstance(encoder_padding_mask, list):
+            encoder_padding_mask = encoder_padding_mask[0]
+        assert not encoder_padding_mask[:, 0].any(), "Only right padding is supported."
+        encoder_lengths = (~encoder_padding_mask).sum(-1)
 
         def expand(t):
             return torch.repeat_interleave(t, num_layers * num_heads, 0)
@@ -205,7 +204,7 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
 
         # renormalize delays to ms
         expected_latency = expected_latency * (input_lengths / encoder_lengths * self.ms_per_frame_shift)
-        return latency_loss, expected_latency.sum().data, expected_delays_var
+        return latency_loss, expected_latency.sum(), expected_delays_var
 
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:

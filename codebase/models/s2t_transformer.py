@@ -17,7 +17,7 @@ from fairseq.models.speech_to_text.s2t_transformer import (
     S2TTransformerModel,
     s2t_transformer_s
 )
-from .causal_conv import CausalConv1d
+from codebase.modules.causal_conv import CausalConv1d
 
 logger = logging.getLogger(__name__)
 
