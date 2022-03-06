@@ -36,6 +36,10 @@ class CIFCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
         default=1.0,
         metadata={"help": "factor for quantity loss."},
     )
+    quant_type: Optional[str] = field(
+        default="align",
+        metadata={"help": "type of quantity loss. sum or align"},
+    )
     quant_clip: Optional[float] = field(
         default=10.0,
         metadata={"help": "for each example in batch, clip the max value for quant loss."},
@@ -84,33 +88,37 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         self.quant_clip = cfg.quant_clip
         self.latency_factor = cfg.latency_factor
         self.ms_per_frame_shift = cfg.ms_per_frame_shift
+        self.quant_type = cfg.quant_type
 
     def prepare_tensors(self, model, net_output, sample):
         # ctc loss
         target = sample["target"]
-        logits = net_output[1]["ctc_logits"][0]
-        # alpha_sum = net_output[1]["alpha_sum"][0].float()
+        logits = net_output[1]["ctc_logits"]  # list, may be empty
         alpha = net_output[1]["alpha"][0].float()
         delays = net_output[1]["delays"][0].float()
-        encoder_padding_mask = net_output[1]["padding_mask"][0]
+        encoder_padding_mask = net_output[1]["encoder_padding_mask"][0]
 
-        lprobs = model.get_normalized_probs(
-            (logits, None), log_probs=True
-        )
-        bsz = target.size(0)
-        # lprobs is expected to be batch first.
-        if lprobs.size(0) != bsz:
-            raise RuntimeError(
-                f'batch size error: lprobs shape={lprobs.size()}, bsz={bsz}')
-        max_src = lprobs.size(1)
-        # reshape lprobs to (L,B,X) for torch.ctc
-        lprobs = lprobs.transpose(1, 0).contiguous()
+        assert len(logits) > 0 or self.ctc_factor == 0
+        if len(logits) > 0:
+            lprobs = model.get_normalized_probs(
+                (logits[0], None), log_probs=True
+            )
+            bsz = target.size(0)
+            # lprobs is expected to be batch first.
+            if lprobs.size(0) != bsz:
+                raise RuntimeError(
+                    f'batch size error: lprobs shape={lprobs.size()}, bsz={bsz}')
+            max_src = lprobs.size(1)
+            # reshape lprobs to (L,B,X) for torch.ctc
+            lprobs = lprobs.transpose(1, 0).contiguous()
+        else:
+            lprobs = torch.empty(0)
 
         # get encoder subsampling mask & lengths
         if encoder_padding_mask is not None:
             encoder_lengths = (~encoder_padding_mask).long().sum(-1)
         else:
-            encoder_lengths = lprobs.new_ones(
+            encoder_lengths = alpha.new_ones(
                 (bsz, max_src), dtype=torch.long).sum(-1)
 
         # get target mask
@@ -118,7 +126,6 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
 
         return {
             "ctc_lprobs": lprobs,
-            # "alpha_sum": alpha_sum,
             "alpha": alpha,
             "delays": delays,
             "encoder_padding_mask": encoder_padding_mask,
@@ -145,10 +152,10 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             tensors, sample, model.encoder.cif_layer.beta)
 
         # latency loss
-        l_latency, latency_factor = self.compute_latency_loss(tensors, sample)
+        l_latency, latency = self.compute_latency_loss(tensors, sample)
 
         # combine
-        loss = loss + l_quant * self.quant_factor + l_latency * latency_factor + self.ctc_factor * ctc_loss
+        loss = loss + l_quant * self.quant_factor + l_latency * self.latency_factor + self.ctc_factor * ctc_loss
 
         logging_output = {
             "loss": loss.data,
@@ -160,12 +167,13 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             "ctc_loss": ctc_loss.data,
             "quantity": l_quant.data,
             "q_acc": quant_acc.data,
-            "dal": l_latency.data,
-            "dal_factor": latency_factor
+            "latency": latency.data,
         }
         return loss, sample_size, logging_output
 
     def compute_ctc_loss(self, tensors, sample):
+        if self.ctc_factor == 0:
+            return torch.zeros(1)
         lprobs = tensors["ctc_lprobs"]
         encoder_lengths = tensors["encoder_lengths"]
         target_padding_mask = tensors["target_padding_mask"]
@@ -194,19 +202,16 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         encoder_lengths = tensors["encoder_lengths"]
         target_padding_mask = tensors["target_padding_mask"]
 
-        DAL = DifferentiableAverageLagging(
+        expected_latency = DifferentiableAverageLagging(
             delays,
             encoder_lengths,
             target_lengths,
             target_padding_mask=target_padding_mask
         )
+        latency_loss = expected_latency.sum()
         # renormalize delays to ms
-        DAL *= (input_lengths / encoder_lengths * self.ms_per_frame_shift)
-
-        latency_factor = self.latency_factor
-        # if hasattr(model, "latency_control"):
-        #     latency_factor = model.latency_control(DAL.mean())
-        return DAL.sum(), latency_factor
+        expected_latency = expected_latency * (input_lengths / encoder_lengths * self.ms_per_frame_shift)
+        return latency_loss, expected_latency.sum()
 
     def compute_quantity_loss(self, tensors, sample, beta=1.0):
         # alpha_sum = tensors["alpha_sum"]
@@ -217,40 +222,47 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         target = sample["target"]
         target_lengths = sample["target_lengths"]
 
-        with torch.no_grad():
-            bsz, tgt_len = target.size()
-            src_len = ctc_lprobs.size(0)
-            assert tuple(alpha.shape) == (bsz, src_len), f"size mismatch {alpha.shape} != {(bsz, src_len)}"
+        if self.quant_type == "sum":
+            quant_targets = target_lengths.unsqueeze(1)
+            boundary = torch.ones_like(quant_targets)
+            quant_outputs = alpha.sum(1, keepdim=True) / beta
+        elif self.quant_type == "align":
+            with torch.no_grad():
+                bsz, tgt_len = target.size()
+                src_len = ctc_lprobs.size(0)
+                assert tuple(alpha.shape) == (bsz, src_len), f"size mismatch {alpha.shape} != {(bsz, src_len)}"
 
-            # we treat blanks (s % 2 == 0) as next segment.
-            states = best_alignment(
-                ctc_lprobs,
-                target,
-                encoder_lengths,
-                target_lengths,
-                blank=self.blank_idx,
-            )
-            # (B, S) tensor indicating each source position's target segment
-            # we treat all but the last blanks (s % 2 == 0) as next segment
-            seg_ids = states.div(2, rounding_mode='floor')
-            seg_ids_next = seg_ids.roll(-1, dims=1)
+                # we treat blanks (s % 2 == 0) as next segment.
+                states = best_alignment(
+                    ctc_lprobs,
+                    target,
+                    encoder_lengths,
+                    target_lengths,
+                    blank=self.blank_idx,
+                )
+                # (B, S) tensor indicating each source position's target segment
+                # we treat all but the last blanks (s % 2 == 0) as next segment
+                seg_ids = states.div(2, rounding_mode='floor')
+                seg_ids_next = seg_ids.roll(-1, dims=1)
 
-            # (B, S) boundary is not blank and diff from next
-            boundary = (seg_ids != seg_ids_next) & (states % 2 != 0)
+                # (B, S) boundary is not blank and diff from next
+                boundary = (seg_ids != seg_ids_next) & (states % 2 != 0)
 
-            if encoder_padding_mask is not None:
-                boundary[encoder_padding_mask] = 0
+                if encoder_padding_mask is not None:
+                    boundary[encoder_padding_mask] = 0
 
-            assert tuple(boundary.shape) == (bsz, src_len), f"size mismatch {boundary.shape} != {(bsz, src_len)}"
-            # NOTE: the below assert will break if impossible to align (e.g. src < tgt or many dups in tgt)
-            # we will ignore the unaligned part for now.
-            # assert (boundary.sum(1) == target_lengths).all(), (
-            #     f"""boundary corrupt: {boundary.cpu()}, expected to sum to
-            #     {target_lengths.cpu()} at dim 1, got {boundary.sum(1).cpu()}""")
-            quant_targets = boundary.cumsum(1)
+                assert tuple(boundary.shape) == (bsz, src_len), f"size mismatch {boundary.shape} != {(bsz, src_len)}"
+                # NOTE: the below assert will break if impossible to align (e.g. src < tgt or many dups in tgt)
+                # we will ignore the unaligned part for now.
+                # assert (boundary.sum(1) == target_lengths).all(), (
+                #     f"""boundary corrupt: {boundary.cpu()}, expected to sum to
+                #     {target_lengths.cpu()} at dim 1, got {boundary.sum(1).cpu()}""")
+                quant_targets = boundary.cumsum(1)
+            # assume alpha is already masked appropriately.
+            quant_outputs = alpha.cumsum(1) / beta
+        else:
+            raise NotImplementedError
 
-        # quant_outputs = alpha.masked_fill(encoder_padding_mask, 0).cumsum(1)
-        quant_outputs = alpha.cumsum(1) / beta
         l_quant = clipped_l2_loss(
             quant_outputs[boundary],
             quant_targets[boundary],
@@ -261,8 +273,6 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         norm = boundary / boundary.sum(1, keepdim=True)
         l_quant = (l_quant * norm[boundary]).sum()
 
-        # l_quant = clipped_l2_loss(
-        #     alpha_sum, target_lengths, clip=self.quant_clip)
         # quant acc
         quant_acc = (
             ((quant_outputs[:, -1] - target_lengths).abs() / target_lengths) <= 0.1
@@ -284,7 +294,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         quantity = sum_logs("quantity")
         q_acc = sum_logs("q_acc")
         nsentences = sum_logs("nsentences")
-        dal = sum_logs("dal")
+        latency = sum_logs("latency")
 
         metrics.log_scalar(
             "quantity", quantity / nsentences, nsentences, round=3
@@ -294,11 +304,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         )
 
         metrics.log_scalar(
-            "dal", dal / nsentences, nsentences, round=3
-        )
-        dal_factor = sum_logs("dal_factor")
-        metrics.log_scalar(
-            "w_dal", dal_factor, 1, round=3
+            "latency", latency / nsentences, nsentences, round=3
         )
 
         ctc_loss = sum_logs("ctc_loss")

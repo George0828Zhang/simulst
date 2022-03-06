@@ -27,11 +27,7 @@ from codebase.models.s2t_emformer import (
     S2TEmformerModel,
     s2t_emformer_s
 )
-from codebase.models.causal_conv import CausalConvTBC
-from codebase.models.common import (
-    AvgPool1dTBCPad,
-    scale_init
-)
+from codebase.modules.causal_conv import CausalConvTBC
 
 logger = logging.getLogger(__name__)
 
@@ -59,22 +55,13 @@ class CIFTransformerModel(S2TEmformerModel):
         )
         parser.add_argument(
             "--cif-highway",
-            action="store_true",
-            help="add highway connection from cif to softmax."
-        )
-        parser.add_argument(
-            "--nar-decoder",
-            action="store_true",
-            help="train non-autoregressive decoder."
-        )
-        parser.add_argument(
-            "--downsample",
-            type=int,
+            choices=["none", "all", "last"],
+            help="add highway connection from cif to layers."
         )
 
     @classmethod
-    def build_encoder(cls, args):
-        encoder = CIFEncoder(args)
+    def build_encoder(cls, args, task):
+        encoder = CIFEncoder(args, task.target_dictionary)
         pretraining_path = getattr(args, "load_pretrained_encoder_from", None)
         if pretraining_path is not None:
             if not Path(pretraining_path).exists():
@@ -98,20 +85,21 @@ class CIFTransformerModel(S2TEmformerModel):
             src_lengths,
             prev_output_tokens.ne(self.decoder.padding_idx).sum(1),
         )
-        ctc_logits = self.decoder.ctc_layer(
-            encoder_out["encoder_out"][0]).transpose(0, 1)
         logits, extra = self.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        extra.update({
-            "ctc_logits": [ctc_logits],
-            # "alpha_sum": encoder_out["alpha_sum"],
-            "alpha": encoder_out["alpha"],
-            "delays": encoder_out["delays"],
-            "cif_lengths": encoder_out["cif_lengths"],
-            "padding_mask": encoder_out["encoder_padding_mask"]
-        })
+        extra.update(encoder_out)
         return logits, extra
+
+    def load_state_dict(self, state_dict, strict=True, model_cfg=None):
+        """ legacy models ctc_layer was on decoder. """
+        for w in state_dict.keys():
+            if re.search(r"decoder.ctc_layer\..*", w) is not None:
+                new_w = w.replace("decoder", "encoder")
+                state_dict[new_w] = state_dict[w]
+                del state_dict[w]
+
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 @with_incremental_state
@@ -268,13 +256,8 @@ class CIFLayer(nn.Module):
 
 
 class CIFEncoder(S2TEmformerEncoder):
-    def __init__(self, args):
-        super().__init__(args)
-        self.downsample_op = AvgPool1dTBCPad(
-            kernel_size=args.downsample,
-            stride=args.downsample,
-            ceil_mode=True,
-        ) if args.downsample > 1 else None
+    def __init__(self, args, dictionary=None):
+        super().__init__(args, dictionary)
         self.cif_layer = CIFLayer(
             in_features=args.encoder_embed_dim,
             hidden_dim=args.encoder_embed_dim,
@@ -288,19 +271,13 @@ class CIFEncoder(S2TEmformerEncoder):
         encoder_out = super().forward(src_tokens, src_lengths)
         src_feats = encoder_out["encoder_out"][0]  # T B C
         padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
-        if self.downsample_op is not None:
-            src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
         cif_out = self.cif_layer(
             src_feats,
             padding_mask,
             target_lengths=target_lengths,
         )
-        encoder_out.update({
-            "encoder_out": [src_feats],
-            "encoder_padding_mask": [padding_mask],
-            **cif_out
-        })
+        encoder_out.update(cif_out)
         return encoder_out
 
     def infer(self, src_tokens, src_lengths, incremental_state, finish=False):
@@ -312,19 +289,14 @@ class CIFEncoder(S2TEmformerEncoder):
         )
         src_feats = encoder_out["encoder_out"][0]  # T B C
         padding_mask = encoder_out["encoder_padding_mask"][0]  # B, T
-        if self.downsample_op is not None:
-            src_feats, padding_mask = self.downsample_op(src_feats, padding_mask)
 
         cif_out = self.cif_layer.infer(
             src_feats,
             incremental_state=incremental_state,
+            encoder_padding_mask=padding_mask,
             finish=finish,
         )
-        encoder_out.update({
-            "encoder_out": [src_feats],
-            "encoder_padding_mask": [padding_mask],
-            **cif_out
-        })
+        encoder_out.update(cif_out)
         return encoder_out
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -352,6 +324,9 @@ class CIFEncoder(S2TEmformerEncoder):
             if re.search(r"cif_layer\..*", w) is not None and w not in state_dict:
                 logger.warning("Ignoring CIF projection weights! Make sure this is intended...")
                 state_dict[w] = cur_state_dict[w]
+            if re.search(r"ctc_layer\..*", w) is not None and w not in state_dict:
+                logger.warning("Ignoring CTC projection weights! Make sure this is intended...")
+                state_dict[w] = cur_state_dict[w]
 
         return super().load_state_dict(state_dict, strict=strict)
 
@@ -371,14 +346,7 @@ class CIFDecoder(TransformerDecoder):
             no_encoder_attn=True,
             output_projection=output_projection
         )
-        scale_init(self)
-        self.is_nar = args.nar_decoder
         self.highway = args.cif_highway
-        self.ctc_layer = Linear(
-            args.encoder_embed_dim,
-            len(dictionary),
-            bias=False
-        )
 
     def extract_features_scriptable(
         self,
@@ -406,8 +374,6 @@ class CIFDecoder(TransformerDecoder):
                 - a dictionary with any model-specific outputs
         """
         bs, slen = prev_output_tokens.size()
-        if alignment_layer is None:
-            alignment_layer = self.num_layers - 1
 
         enc: Optional[Tensor] = None
         cif: Optional[Tensor] = None
@@ -442,10 +408,7 @@ class CIFDecoder(TransformerDecoder):
                 positions = positions[:, -1:]
 
         # embed tokens and positions
-        x = cif
-        if not self.is_nar:
-            # ar
-            x = (x + self.embed_tokens(prev_output_tokens)) * self.embed_scale
+        x = (cif + self.embed_tokens(prev_output_tokens)) * self.embed_scale
 
         if self.quant_noise is not None:
             x = self.quant_noise(x)
@@ -472,11 +435,12 @@ class CIFDecoder(TransformerDecoder):
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
         for idx, layer in enumerate(self.layers):
-            if incremental_state is None and not full_context_alignment and not self.is_nar:
+            if incremental_state is None:
                 self_attn_mask = self.buffered_future_mask(x)
             else:
                 self_attn_mask = None
-
+            if idx > 0 and self.highway == "all":
+                x += cif.transpose(0, 1)
             x, layer_attn, _ = layer(
                 x,
                 enc,
@@ -484,19 +448,8 @@ class CIFDecoder(TransformerDecoder):
                 incremental_state,
                 self_attn_mask=self_attn_mask,
                 self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=bool((idx == alignment_layer)),
-                need_head_weights=bool((idx == alignment_layer)),
             )
             inner_states.append(x)
-            if layer_attn is not None and idx == alignment_layer:
-                attn = layer_attn.float().to(x)
-
-        if attn is not None:
-            if alignment_heads is not None:
-                attn = attn[:alignment_heads]
-
-            # average probabilities over heads
-            attn = attn.mean(dim=0)
 
         if self.layer_norm is not None:
             x = self.layer_norm(x)
@@ -505,7 +458,7 @@ class CIFDecoder(TransformerDecoder):
         x = x.transpose(0, 1)
 
         # highway connection
-        if self.highway:
+        if self.highway in ["all", "last", True]:
             x += cif
 
         if self.project_out_dim is not None:
@@ -550,11 +503,9 @@ class CIFDecoder(TransformerDecoder):
 
 @register_model_architecture("cif_transformer", "cif_transformer_s")
 def cif_transformer(args):
-    args.downsample = getattr(args, "downsample", 1)
-    args.nar_decoder = getattr(args, "nar_decoder", False)
     args.cif_beta = getattr(args, "cif_beta", 1.0)  # set to smaller value to allow longer predictions
     args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)
     args.cif_conv_kernel = getattr(args, "cif_conv_kernel", 3)
-    args.cif_highway = getattr(args, "cif_highway", False)
-    args.activation_fn = getattr(args, "activation_fn", "gelu")
+    args.cif_highway = getattr(args, "cif_highway", "all")
+    args.ctc_layer = True
     s2t_emformer_s(args)
