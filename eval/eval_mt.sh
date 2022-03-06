@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-TASK=offline_mt
+export TGT=es
+TASK=mt_${TGT}
 SPLIT=valid
 EXP=../exp
 . ${EXP}/data_path.sh
 CHECKDIR=${EXP}/checkpoints/${TASK}
 DATABIN=${DATA}/mt/data-bin
 AVG=true
-RESULT=./mt.results
+RESULT=./${TASK}.results
 
 EXTRAARGS="--scoring sacrebleu --sacrebleu-tokenizer 13a --sacrebleu-lowercase"
 GENARGS="--beam 5 --max-len-a 1.2 --max-len-b 10 \
---remove-bpe sentencepiece --tokenizer moses -s ${SRC} -t ${TGT} --moses-no-escape"
+--remove-bpe sentencepiece"
 
 export CUDA_VISIBLE_DEVICES=0
 
@@ -23,7 +24,7 @@ else
   CHECKPOINT_FILENAME=checkpoint_best.pt
 fi
 
-python -m fairseq_cli.generate ${DATABIN} \
+python generate.py ${DATABIN} \
   --user-dir ${USERDIR} \
   --gen-subset ${SPLIT} \
   --task translation \
@@ -31,6 +32,7 @@ python -m fairseq_cli.generate ${DATABIN} \
   --model-overrides '{"load_pretrained_encoder_from": None}' \
   --results-path ${RESULT} \
   ${GENARGS} ${EXTRAARGS}
+tail -1 ${RESULT}/generate-${SPLIT}.txt
 
 # grep -E "H-[0-9]+" ${RESULT}/generate-${SPLIT}.txt | \
 #   sed 's/H-//' | sort -k 1 -n | cut -f3 | \

@@ -1,5 +1,5 @@
 export SRC=en
-export TGT=de
+TGT=${TGT:-de}
 export DATA_ROOT=/livingrooms/george/mustc
 export DATA=${DATA_ROOT}/${SRC}-${TGT}
 

@@ -2,7 +2,7 @@
 SRC=en
 TGT=de
 DATA_ROOT=/livingrooms/george/mustc
-vocab=8000
+vocab=4096
 vtype=unigram
 
 FAIRSEQ=~/utility/fairseq

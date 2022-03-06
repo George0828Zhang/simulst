@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-TASK=mt
+export TGT=de
+TASK=mt_${TGT}
 . ./data_path.sh
 DATA=${DATA}/mt/data-bin
 
@@ -27,4 +28,4 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --log-format simple --log-interval 50 \
     --num-workers 4 \
     --fp16 \
-    --seed 1
+    --seed 999
