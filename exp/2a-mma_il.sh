@@ -11,8 +11,8 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --train-subset distill_st,train_st \
     --valid-subset dev_st \
     --skip-invalid-size-inputs-valid-test \
-    --max-tokens 20000 \
-    --update-freq 8 \
+    --max-tokens 40000 \
+    --update-freq 4 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
     --arch mma_model_s --share-decoder-input-output-embed \
@@ -26,7 +26,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --max-update 200000 \
     --validate-after-updates 3000 \
     --save-dir checkpoints/${TASK} \
-    --wandb-project simulst-cif \
+    --wandb-project simulst-cif-final \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --keep-last-epochs 1 \
     --keep-best-checkpoints 5 \

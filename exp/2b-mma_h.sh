@@ -11,8 +11,8 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --train-subset distill_st,train_st \
     --valid-subset dev_st \
     --skip-invalid-size-inputs-valid-test \
-    --max-tokens 20000 \
-    --update-freq 8 \
+    --max-tokens 40000 \
+    --update-freq 4 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
     --arch mma_model_s --share-decoder-input-output-embed \
