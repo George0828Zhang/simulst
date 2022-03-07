@@ -1,4 +1,5 @@
 import re
+import math
 import torch
 import torch.nn as nn
 import logging
@@ -17,6 +18,7 @@ from fairseq.models.transformer import (
 )
 from fairseq.modules import (
     LayerNorm,
+    TransformerDecoderLayer
     # FairseqDropout
 )
 from fairseq.incremental_decoding_utils import with_incremental_state
@@ -55,8 +57,8 @@ class CIFTransformerModel(S2TEmformerModel):
         )
         parser.add_argument(
             "--cif-highway",
-            choices=["none", "all", "last"],
-            help="add highway connection from cif to layers."
+            action="store_true",
+            help="add highway connection from cif to output layer."
         )
 
     @classmethod
@@ -331,6 +333,39 @@ class CIFEncoder(S2TEmformerEncoder):
         return super().load_state_dict(state_dict, strict=strict)
 
 
+class FakeCrossAttn(nn.Module):
+    def __init__(self, embed_dim, kdim, bias=True):
+        super().__init__()
+        self.kdim = kdim
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(self.kdim, embed_dim, bias=bias)
+        self.activation_fn = nn.GELU()
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+        nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
+
+        # init
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.out_proj.bias is not None:
+            nn.init.constant_(self.out_proj.bias, 0.0)
+
+    def forward(self, query, key, value, **kwargs):
+        assert query.size() == key.size()
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        out = self.activation_fn(q + k)
+        return self.out_proj(out), None  # followed by dropout
+
+
+class CIFDecoderLayer(TransformerDecoderLayer):
+    def build_encoder_attention(self, embed_dim, args):
+        return FakeCrossAttn(
+            embed_dim,
+            kdim=args.encoder_embed_dim
+        )
+
+
 class CIFDecoder(TransformerDecoder):
     def __init__(
         self,
@@ -343,10 +378,13 @@ class CIFDecoder(TransformerDecoder):
             args,
             dictionary,
             embed_tokens,
-            no_encoder_attn=True,
+            # no_encoder_attn=True,
             output_projection=output_projection
         )
         self.highway = args.cif_highway
+
+    def build_decoder_layer(self, args, no_encoder_attn=False):
+        return CIFDecoderLayer(args, no_encoder_attn)
 
     def extract_features_scriptable(
         self,
@@ -375,7 +413,6 @@ class CIFDecoder(TransformerDecoder):
         """
         bs, slen = prev_output_tokens.size()
 
-        enc: Optional[Tensor] = None
         cif: Optional[Tensor] = None
         cif_lengths: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
@@ -384,7 +421,6 @@ class CIFDecoder(TransformerDecoder):
             assert (
                 cif.size()[1] == bs
             ), f"Expected cif.shape == (t, {bs}, c) got {cif.shape}"
-            cif = cif.transpose(1, 0)
             cif_lengths = encoder_out["cif_lengths"][0]
         if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
             padding_mask = encoder_out["encoder_padding_mask"][0]
@@ -400,15 +436,15 @@ class CIFDecoder(TransformerDecoder):
             _T = prev_output_tokens.size(1)
             cif_index = cif_lengths.clip(max=_T) - 1
             cif = cif.gather(
-                1,
-                cif_index.view(bs, 1, 1).expand(-1, -1, cif.size(-1))
+                0,
+                cif_index.view(1, bs, 1).expand(-1, -1, cif.size(-1))
             )
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
 
         # embed tokens and positions
-        x = (cif + self.embed_tokens(prev_output_tokens)) * self.embed_scale
+        x = self.embed_tokens(prev_output_tokens) * self.embed_scale
 
         if self.quant_noise is not None:
             x = self.quant_noise(x)
@@ -439,11 +475,9 @@ class CIFDecoder(TransformerDecoder):
                 self_attn_mask = self.buffered_future_mask(x)
             else:
                 self_attn_mask = None
-            if idx > 0 and self.highway == "all":
-                x += cif.transpose(0, 1)
             x, layer_attn, _ = layer(
                 x,
-                enc,
+                cif,  # enc,
                 padding_mask,
                 incremental_state,
                 self_attn_mask=self_attn_mask,
@@ -454,12 +488,12 @@ class CIFDecoder(TransformerDecoder):
         if self.layer_norm is not None:
             x = self.layer_norm(x)
 
+        # highway connection
+        if self.highway:
+            x += cif
+
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
-
-        # highway connection
-        if self.highway in ["all", "last", True]:
-            x += cif
 
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
@@ -506,6 +540,6 @@ def cif_transformer(args):
     args.cif_beta = getattr(args, "cif_beta", 1.0)  # set to smaller value to allow longer predictions
     args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)
     args.cif_conv_kernel = getattr(args, "cif_conv_kernel", 3)
-    args.cif_highway = getattr(args, "cif_highway", "all")
+    args.cif_highway = getattr(args, "cif_highway", False)
     args.ctc_layer = True
     s2t_emformer_s(args)
