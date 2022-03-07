@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import re
 import logging
 import math
 import torch
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 class S2TEmformerEncoder(FairseqEncoder):
     def __init__(self, args, dictionary=None):
         super().__init__(args)
+        self.args = args
 
         self.encoder_freezing_updates = args.encoder_freezing_updates
         self.num_updates = 0
@@ -275,6 +276,18 @@ class S2TEmformerEncoder(FairseqEncoder):
             "src_lengths": [],
             "ctc_logits": [ctc_logits] if ctc_logits is not None else []
         }
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        1. ignores ctc projection if not needed
+        """
+        if not self.args.ctc_layer:
+            for w in state_dict.keys():
+                if re.search(r"ctc_layer\..*", w) is not None:
+                    logger.warning("Discarding CTC projection weights! Make sure this is intended...")
+                    del state_dict[w]
+
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 @register_model("s2t_emformer")

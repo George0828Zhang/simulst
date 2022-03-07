@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from typing import Dict, List, Optional
-import re
 import logging
 from torch import Tensor
 from fairseq import checkpoint_utils
@@ -230,19 +229,6 @@ class MMAModel(S2TEmformerModel):
                 f"{args.load_pretrained_decoder_from}"
             )
         return decoder
-
-    def load_state_dict(self, state_dict, strict=True, model_cfg=None):
-        """
-        1. ignores cif projection if not available
-        """
-        cur_state_dict = self.state_dict()
-
-        for w in cur_state_dict.keys():
-            if re.search(r"ctc_layer\..*", w) is not None and w not in state_dict:
-                logger.warning("Ignoring CTC projection weights! Make sure this is intended...")
-                state_dict[w] = cur_state_dict[w]
-
-        return super().load_state_dict(state_dict, strict=strict)
 
 
 @register_model_architecture(
