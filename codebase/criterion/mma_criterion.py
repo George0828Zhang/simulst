@@ -190,7 +190,7 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
         else:
             raise NotImplementedError
 
-        avg_loss = self.latency_avg_weight * expected_latency.sum()
+        avg_loss = self.latency_avg_weight * expected_latency.clip(min=0).sum()
 
         # 2.2 variance of expected delays
         expected_delays_var = (

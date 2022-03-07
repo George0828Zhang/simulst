@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
+export TGT=de
 LATENCY=${1:-0.0}
-TASK=mma_${LATENCY//./_}
+TASK=mma_${TGT}_${LATENCY//./_}
 . ./data_path.sh
-ASR_CHECK=checkpoints/test_ctc_asr_load/checkpoint_best.pt
+ASR_CHECK=checkpoints/ctc_s2s_asr/avg_best_5_checkpoint.pt
 
-echo "Train MMA with latency weight: ${LATENCY}"
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --load-pretrained-encoder-from ${ASR_CHECK} \
     --config-yaml config_st.yaml \
@@ -17,8 +17,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --inference-config-yaml infer_st.yaml \
     --arch mma_model_s --share-decoder-input-output-embed \
     --simul-attn-type infinite_lookback_fixed_pre_decision \
-    --fixed-pre-decision-type last --fixed-pre-decision-ratio 8 \
-    --energy-bias --mass-preservation \
+    --fixed-pre-decision-ratio 8 --mass-preservation \
     --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
     --criterion mma_criterion --label-smoothing 0.1 --latency-avg-weight ${LATENCY} --latency-var-weight ${LATENCY} \
     --clip-norm 10 --weight-decay 1e-4 \
@@ -35,4 +34,4 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --log-format simple --log-interval 50 \
     --num-workers ${WORKERS} \
     --fp16 --fp16-init-scale 1 --memory-efficient-fp16 \
-    --seed 1
+    --seed 999
