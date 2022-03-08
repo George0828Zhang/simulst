@@ -17,7 +17,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --inference-config-yaml infer_st.yaml \
     --arch cif_transformer_s --share-decoder-input-output-embed --cif-sg-alpha \
     --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
-    --criterion cif_loss --label-smoothing 0.1 --quant-type sum --ctc-factor 0.0 --latency-factor ${LAT} \
+    --criterion cif_loss --label-smoothing 0.1 --quant-type sum --ctc-factor 0.0 --latency-factor ${LATENCY} \
     --clip-norm 10 --weight-decay 1e-4 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 5e-4 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 --warmup-init-lr 1e-7 \

@@ -112,7 +112,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             # reshape lprobs to (L,B,X) for torch.ctc
             lprobs = lprobs.transpose(1, 0).contiguous()
         else:
-            lprobs = torch.empty(0)
+            lprobs = torch.empty(0).type_as(alpha)
 
         # get encoder subsampling mask & lengths
         if encoder_padding_mask is not None:
@@ -173,7 +173,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
 
     def compute_ctc_loss(self, tensors, sample):
         if self.ctc_factor == 0:
-            return torch.zeros(1)
+            return torch.zeros(1).type_as(tensors["alpha"])
         lprobs = tensors["ctc_lprobs"]
         encoder_lengths = tensors["encoder_lengths"]
         target_padding_mask = tensors["target_padding_mask"]
