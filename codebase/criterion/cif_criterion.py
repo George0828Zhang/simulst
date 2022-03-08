@@ -208,7 +208,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
             target_lengths,
             target_padding_mask=target_padding_mask
         )
-        latency_loss = expected_latency.sum()
+        latency_loss = expected_latency.clip(min=0).sum()
         # renormalize delays to ms
         expected_latency = expected_latency * (input_lengths / encoder_lengths * self.ms_per_frame_shift)
         return latency_loss, expected_latency.sum()
