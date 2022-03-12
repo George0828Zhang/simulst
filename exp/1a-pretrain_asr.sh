@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-TASK=ctc_s2s_asr
+export TGT=de
+TASK=ctc_s2s_asr_de
 . ./data_path.sh
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \

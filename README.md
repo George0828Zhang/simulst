@@ -6,7 +6,7 @@
 ```bash
 git clone https://github.com/pytorch/fairseq.git
 cd fairseq
-git checkout 8b861be
+git checkout 4a7835b
 python setup.py build_ext --inplace
 pip install .
 ```
@@ -15,57 +15,110 @@ pip install .
 ```bash
 pip install -r requirements.txt
 ```
+4. Update submodules
+```bash
+git submodule update --init --recursive
+```
 
 ## Data Preparation
-This section introduces the data preparation for training and evaluation. Following will be based on MuST-C.
+This section introduces the data preparation for training and evaluation. Following will be based on MuST-C En-De.
 
 1. [Download](https://ict.fbk.eu/must-c/) and unpack the package.
 ```bash
 cd ${DATA_ROOT}
-tar -zxvf MUSTC_v1.2_en-zh.tar.gz
+tar -zxvf MUSTC_v2.0_en-de.tar.gz
 ```
-2. In `DATA/get_mustc.sh`, set `DATA_ROOT` to the root path of speech data (the directory of previous step).
+2. Inside `DATA/get_mustc.sh`, cnfigure the correct paths:
+```bash
+# the path where the data is unpacked.
+DATA_ROOT=/livingrooms/george/mustc
+FAIRSEQ=~/utility/fairseq
+# IF NEEDED, activate your python environments
+source ~/envs/apex/bin/activate
+```
 3. Preprocess data with
 ```bash
 cd DATA
-bash get_mustc.sh ${lang}
+bash mustc/get_mustc.sh
 ```
-The output manifest files should appear under `${DATA_ROOT}/en-${lang}/`.
+The fbank and manifest files should appear under `${DATA_ROOT}/en-de/`.
 
-4. In `DATA/get_mustc_asr.sh`, set `DATA_ROOT` and `LANGS`. Then preprocess data for joint asr with 
+4. Inside `DATA/get_data_mt.sh`, cnfigure the correct paths:
 ```bash
-bash get_mustc_asr.sh
+# the path where the data is unpacked.
+DATA_ROOT=/livingrooms/george/mustc
+FAIRSEQ=~/utility/fairseq
+# IF NEEDED, activate your python environments
+source ~/envs/apex/bin/activate
 ```
-The output manifest files should appear under `${DATA_ROOT}/joint/`.
+5. Preprocess data for MT with
+```bash
+cd DATA
+bash mustc/get_data_mt.sh
+```
+The files should appear under `${DATA_ROOT}/en-de/mt/`.
 
 5. Configure environment and path in `exp/data_path.sh` before training:
 ```bash
 export SRC=en
 export TGT=de
-export DATA_ROOT=/path/to/mustc/root
+export DATA_ROOT=/livingrooms/george/mustc
 export DATA=${DATA_ROOT}/${SRC}-${TGT}
 
-FAIRSEQ=/path/to/fairseq
-USERDIR=`realpath ../simultaneous_translation`
+FAIRSEQ=~/utility/fairseq
+USERDIR=`realpath ../codebase`
 export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
 
-# If you have venv, add this line to use it
-# source ~/envs/fair/bin/activate
+# IF NEEDED, activate your python environments
+source ~/envs/apex/bin/activate
 ```
 
-## ASR Pretraining
-First pretrain the speech encoder using CTC
+6. (Optional) To migrate data to a new system, change paths in `scripts/migrate_data_path.sh`:
 ```bash
-bash 1-ctc_asr.sh
+ROOT=/media/george/Data/mustc/en-de  # new data path
+from=/livingrooms/george/mustc/en-de  # old data path
+to=${ROOT}
 ```
-### Pretrained model
-We provide speech encoder weights pretrained on the english transcription of MuST-C v1.0 joint data (english speech on all 8 languages). The transcriptions are converted into phoneme sequences using [g2p](DATA/g2p_encode.py). The phone error rate (PER) of the `avg_best_5_checkpoint.pt` evaluated on each split is reported below
-|MuST-C Split|en-de|en-es|en-fr|en-it|en-nl|en-pt|en-ro|en-ru|Download|
-|-|-|-|-|-|-|-|-|-|-|
-|dev|7.894|14.250|13.890|13.486|13.940|8.318|13.882|14.181|[checkpoints](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EXzSb9gOJXZMm7wjJCxj49gBNvMalGfTeo8zY05Cte4BUg?e=IXPjb4)|
-|tst-COMMON|10.572|12.274|12.334|12.359|12.211|12.350|12.346|12.337|[src_dict.txt](https://ntucc365-my.sharepoint.com/:t:/g/personal/r09922057_ntu_edu_tw/EaZptzl7rT1Ch67JzdRXLGABUnKLy1aPbmfCnERgyITqVQ?e=28hG83)|
-|tst-HE|8.573|9.339|9.317|9.507|10.332|10.153|10.046|9.532|-|
-* Put `src_dict.txt` in your `${DATA_ROOT}/en-${TGT}`.
+Then run
+```bash
+bash scripts/migrate_data_path.sh
+```
 
-## Online Evaluation (SimulEval)
-Install [SimulEval](docs/extra_installation.md).
+## ASR Pre-training
+First pre-train the ASR using joint CTC ASR
+```bash
+cd exp
+bash 1a-pretrain_asr.sh
+```
+Run average checkpoint and evaluation
+```bash
+cd eval
+bash eval_asr.sh
+```
+
+### Pre-trained model
+|MuST-C|en-de(v2)|en-es|
+|-|-|-|
+|dev|9.65|14.44|
+|model|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EUc3OWHv2TdDrvsj7UuUzKUBLFw0bxngdSid__81w-SYcw?e=KHg2lD)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EVSSLkjzASVKjqEEt5NQ3oQBYhcxbT9IU1Ah0vlAuSPXww?e=grgf24)|
+|vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
+
+<!-- 
+## MT (Seq-KD)
+Train MT mode 
+```bash
+cd exp
+bash 0-mt.sh
+```
+Run average checkpoint and evaluation
+```bash
+cd eval
+bash eval_mt.sh
+```
+
+### Pre-trained model
+|MuST-C|en-de(v2)|en-es|
+|-|-|-|
+|valid|31.76|39.86|
+|model|[download]()|[download]()|
+|vocab|shared w/ ST|shared w/ ST| -->

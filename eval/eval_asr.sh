@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-TASK=ctc_s2s_asr
+export TGT=de
+TASK=ctc_s2s_asr_${TGT}
 SPLIT=dev
 EXP=$(realpath ../exp)
 . ${EXP}/data_path.sh
 CONF=$DATA/config_st.yaml
 CHECKDIR=${EXP}/checkpoints/${TASK}
-RESULTS=asr.${SPLIT}.results
+RESULTS=asr_${TGT}.${SPLIT}.results
 AVG=true
 
 EXTRAARGS="--scoring wer --wer-remove-punct --wer-lowercase --wer-tokenizer 13a --beam 5 --max-len-a 0.1 --max-len-b 10"

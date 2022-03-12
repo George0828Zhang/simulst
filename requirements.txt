@@ -1,7 +1,5 @@
 torch>=1.8.1
 torchaudio>=0.8.1
-g2p_en
-submitit
 pandas
 soundfile
 editdistance
@@ -12,3 +10,6 @@ tqdm
 tensorboard
 tensorboardX
 asr-evaluation
+bitarray
+warp_rnnt
+simuleval
