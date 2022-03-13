@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-SPLIT=dev #tst-COMMON
-EVAL_DATA=./data
+export TGT=de
+SPLIT=tst-COMMON
+EVAL_DATA=./data_${TGT}
 . ../exp/data_path.sh
 MUSTC_ROOT=`dirname ${DATA}`
 DATA=$(realpath ../DATA)
