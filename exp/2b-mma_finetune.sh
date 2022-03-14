@@ -20,14 +20,10 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -q|--qua)
-      QUA="$2"
+    -m|--model)
+      MODEL="$2"
       shift # past argument
       shift # past value
-      ;;
-    -sg|--sg-alpha)
-      POSITIONAL+=("--cif-sg-alpha") # save it in an array for later
-      shift # past argument
       ;;
     *)    # unknown option
       POSITIONAL+=("$1") # save it in an array for later
@@ -40,15 +36,14 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
 export TGT=${TGT:-de}
-QUA=${QUA:-sum}
-CTC=${CTC:-0.0}
+MODEL=${MODEL:-infinite_lookback}
 LAT=${LAT:-0.0}
-TASK=cif_${TGT}_${QUA}_ctc${CTC//./_}_lat${LAT//./_}
+TASK=mma_${TGT}_${MODEL}_${LAT//./_}
 . ./data_path.sh
-CIF_CHECK=checkpoints/cif_${TGT}_${QUA}_ctc${CTC//./_}_lat0_0/avg_best_5_checkpoint.pt
+MMA_CHECK=checkpoints/mma_${TGT}_${MODEL}_0_0/avg_best_5_checkpoint.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --finetune-from-model ${CIF_CHECK} \
+    --finetune-from-model ${MMA_CHECK} \
     --config-yaml config_st.yaml \
     --train-subset distill_st \
     --valid-subset dev_st \
@@ -57,10 +52,12 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --update-freq 8 \
     --task speech_to_text_infer \
     --inference-config-yaml infer_st.yaml \
-    --arch cif_transformer_s --share-decoder-input-output-embed \
+    --arch mma_model_s --share-decoder-input-output-embed \
+    --simul-attn-type ${MODEL}_fixed_pre_decision \
+    --fixed-pre-decision-ratio 8 --mass-preservation \
     --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
-    --criterion cif_loss --label-smoothing 0.1 \
-    --quant-type ${QUA} --ctc-factor ${CTC} --latency-factor ${LAT} \
+    --criterion mma_criterion --label-smoothing 0.1 \
+    --latency-avg-weight ${LAT} --latency-var-weight ${LAT} \
     --clip-norm 10 --weight-decay 1e-6 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 1e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 --warmup-init-lr 1e-7 \
