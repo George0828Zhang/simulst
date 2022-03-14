@@ -1,36 +1,11 @@
 from typing import Optional
-# import torch
+import torch
 from torch import Tensor
 
 from codebase.utils.functions import (
-    # exclusive_cumprod,
+    exclusive_cumprod,
     prob_check,
     moving_sum,
-)
-import torch.utils.cpp_extension
-from pathlib import Path
-import examples
-
-module_path = Path(examples.__file__).parent / "operators"
-assert module_path.exists(), f"operators not found: {module_path}"
-build_path = module_path / "build"
-build_path.mkdir(exist_ok=True)
-
-alignment_train_cpu_binding = torch.utils.cpp_extension.load(
-    "alignment_train_cpu_binding",
-    sources=[
-        module_path / "alignment_train_cpu.cpp",
-    ],
-    build_directory=build_path.as_posix()
-)
-
-alignment_train_cuda_binding = torch.utils.cpp_extension.load(
-    "alignment_train_cuda_binding",
-    sources=[
-        module_path / "alignment_train_cuda.cpp",
-        module_path / "alignment_train_kernel.cu"
-    ],
-    build_directory=build_path.as_posix()
 )
 
 
@@ -67,12 +42,31 @@ def expected_alignment_from_p_choose(
     if padding_mask is not None:
         p_choose = p_choose.masked_fill(padding_mask.unsqueeze(1), 0.0)
 
-    alpha = p_choose.new_zeros([bsz, tgt_len, src_len])
-    if p_choose.is_cuda:
-        p_choose = p_choose.contiguous()
-        alignment_train_cuda_binding.alignment_train_cuda(p_choose, alpha, eps)
-    else:
-        alignment_train_cpu_binding.alignment_train_cpu(p_choose, alpha, eps)
+    # cumprod_1mp : bsz, tgt_len, src_len
+    cumprod_1mp = exclusive_cumprod(1 - p_choose, dim=2, eps=eps)
+    cumprod_1mp_clamp = torch.clamp(cumprod_1mp, eps, 1.0)
+
+    alpha_0 = p_choose.new_zeros([bsz, 1, src_len])
+    alpha_0[:, :, 0] = 1.0
+
+    previous_alpha = [alpha_0]
+    prefix = p_choose * cumprod_1mp
+    for i in range(tgt_len):
+        # p_choose: bsz , tgt_len, src_len
+        # cumprod_1mp_clamp : bsz, tgt_len, src_len
+        # previous_alpha[i]: bsz, 1, src_len
+        # alpha_i: bsz, src_len
+        alpha_i = (
+            prefix[:, i]
+            * torch.cumsum(
+                previous_alpha[i][:, 0] / cumprod_1mp_clamp[:, i], dim=1
+            )
+        ).clamp(0, 1.0)
+
+        previous_alpha.append(alpha_i.unsqueeze(1))
+
+    # alpha: bsz * num_heads, tgt_len, src_len
+    alpha = torch.cat(previous_alpha[1:], dim=1)
 
     # Mix precision to prevent overflow for fp16
     alpha = alpha.type(dtype)
