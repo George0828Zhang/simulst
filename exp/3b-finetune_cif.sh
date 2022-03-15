@@ -70,7 +70,6 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --best-checkpoint-metric latency \
     --keep-last-epochs 1 \
     --keep-best-checkpoints 5 \
-    --patience 20 \
     --log-format simple --log-interval 50 \
     --num-workers ${WORKERS} \
     --fp16 --fp16-init-scale 1 --memory-efficient-fp16 \
