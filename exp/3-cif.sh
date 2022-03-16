@@ -25,6 +25,11 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
+    -il|--infinite-lookback)
+      IL="_il"
+      POSITIONAL+=("--cif-infinite-lookback")
+      shift # past argument
+      ;;
     -sg|--sg-alpha)
       POSITIONAL+=("--cif-sg-alpha") # save it in an array for later
       shift # past argument
@@ -40,10 +45,10 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
 export TGT=${TGT:-de}
-QUA=${QUA:-sum}
+QUA=${QUA:-align}
 CTC=${CTC:-0.0}
 LAT=${LAT:-0.0}
-TASK=cif_${TGT}_${QUA}_ctc${CTC//./_}_lat${LAT//./_}
+TASK=cif_${TGT}${IL}_${QUA}_ctc${CTC//./_}_lat${LAT//./_}
 . ./data_path.sh
 ASR_CHECK=checkpoints/ctc_s2s_asr_${TGT}/avg_best_5_checkpoint.pt
 
