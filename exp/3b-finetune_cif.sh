@@ -50,10 +50,10 @@ CTC=${CTC:-0.0}
 LAT=${LAT:-0.0}
 TASK=cif_${TGT}${IL}_${QUA}_ctc${CTC//./_}_lat${LAT//./_}
 . ./data_path.sh
-ASR_CHECK=checkpoints/ctc_s2s_asr_${TGT}/avg_best_5_checkpoint.pt
+CIF_CHECK=checkpoints/cif_${TGT}_${QUA}_ctc${CTC//./_}_lat0_0/avg_best_5_checkpoint.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --load-pretrained-encoder-from ${ASR_CHECK} \
+    --finetune-from-model ${CIF_CHECK} \
     --config-yaml config_st.yaml \
     --train-subset distill_st \
     --valid-subset dev_st \
@@ -69,13 +69,12 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --clip-norm 10 --weight-decay 1e-6 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 1e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 --warmup-init-lr 1e-7 \
-    --max-update 200000 \
+    --max-update 50000 \
     --save-dir checkpoints/${TASK} \
     --wandb-project simulst-cif-final \
-    --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
+    --best-checkpoint-metric latency \
     --keep-last-epochs 1 \
     --keep-best-checkpoints 5 \
-    --patience 20 \
     --log-format simple --log-interval 50 \
     --num-workers ${WORKERS} \
     --fp16 --fp16-init-scale 1 --memory-efficient-fp16 \

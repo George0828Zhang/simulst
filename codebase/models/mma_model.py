@@ -238,5 +238,5 @@ def ssnt_model_s(args):
     args.noise_var = getattr(args, "noise_var", 2.0)
     args.noise_mean = getattr(args, "noise_mean", 0.0)
     args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
-    args.attention_eps = getattr(args, "attention_eps", 1e-10)
+    args.attention_eps = getattr(args, "attention_eps", 1e-6)
     s2t_emformer_s(args)

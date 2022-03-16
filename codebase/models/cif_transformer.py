@@ -7,7 +7,7 @@ from typing import Optional, Dict, List
 from torch import Tensor
 from pathlib import Path
 from fairseq import checkpoint_utils
-
+from fairseq.data.data_utils import lengths_to_padding_mask
 from fairseq.models import (
     register_model,
     register_model_architecture
@@ -59,6 +59,11 @@ class CIFTransformerModel(S2TEmformerModel):
             "--cif-highway",
             action="store_true",
             help="add highway connection from cif to output layer."
+        )
+        parser.add_argument(
+            "--cif-infinite-lookback",
+            action="store_true",
+            help="add infinite lookback (soft) attention for decoder layer."
         )
 
     @classmethod
@@ -360,10 +365,161 @@ class FakeCrossAttn(nn.Module):
 
 class CIFDecoderLayer(TransformerDecoderLayer):
     def build_encoder_attention(self, embed_dim, args):
+        if args.cif_infinite_lookback:
+            return super().build_encoder_attention(embed_dim, args)
         return FakeCrossAttn(
             embed_dim,
             kdim=args.encoder_embed_dim
         )
+
+    def forward(
+        self,
+        x,
+        encoder_out: Optional[torch.Tensor] = None,
+        encoder_padding_mask: Optional[torch.Tensor] = None,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        prev_self_attn_state: Optional[List[torch.Tensor]] = None,
+        prev_attn_state: Optional[List[torch.Tensor]] = None,
+        self_attn_mask: Optional[torch.Tensor] = None,
+        self_attn_padding_mask: Optional[torch.Tensor] = None,
+        need_attn: bool = False,
+        need_head_weights: bool = False,
+    ):
+        """
+        **only difference is static_kv=False, and future masking for encoder_out.
+        Args:
+            x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
+            encoder_padding_mask (ByteTensor, optional): binary
+                ByteTensor of shape `(batch, src_len)` where padding
+                elements are indicated by ``1``.
+            need_attn (bool, optional): return attention weights
+            need_head_weights (bool, optional): return attention weights
+                for each head (default: return average over heads).
+        Returns:
+            encoded output of shape `(seq_len, batch, embed_dim)`
+        """
+        if need_head_weights:
+            need_attn = True
+
+        residual = x
+        if self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+        if prev_self_attn_state is not None:
+            prev_key, prev_value = prev_self_attn_state[:2]
+            saved_state: Dict[str, Optional[Tensor]] = {
+                "prev_key": prev_key,
+                "prev_value": prev_value,
+            }
+            if len(prev_self_attn_state) >= 3:
+                saved_state["prev_key_padding_mask"] = prev_self_attn_state[2]
+            assert incremental_state is not None
+            self.self_attn._set_input_buffer(incremental_state, saved_state)
+        _self_attn_input_buffer = self.self_attn._get_input_buffer(incremental_state)
+        if self.cross_self_attention and not (
+            incremental_state is not None
+            and _self_attn_input_buffer is not None
+            and "prev_key" in _self_attn_input_buffer
+        ):
+            if self_attn_mask is not None:
+                assert encoder_out is not None
+                self_attn_mask = torch.cat(
+                    (x.new_zeros(x.size(0), encoder_out.size(0)), self_attn_mask), dim=1
+                )
+            if self_attn_padding_mask is not None:
+                if encoder_padding_mask is None:
+                    assert encoder_out is not None
+                    encoder_padding_mask = self_attn_padding_mask.new_zeros(
+                        encoder_out.size(1), encoder_out.size(0)
+                    )
+                self_attn_padding_mask = torch.cat(
+                    (encoder_padding_mask, self_attn_padding_mask), dim=1
+                )
+            assert encoder_out is not None
+            y = torch.cat((encoder_out, x), dim=0)
+        else:
+            y = x
+
+        x, attn = self.self_attn(
+            query=x,
+            key=y,
+            value=y,
+            key_padding_mask=self_attn_padding_mask,
+            incremental_state=incremental_state,
+            need_weights=False,
+            attn_mask=self_attn_mask,
+        )
+        if self.c_attn is not None:
+            tgt_len, bsz = x.size(0), x.size(1)
+            x = x.view(tgt_len, bsz, self.nh, self.head_dim)
+            x = torch.einsum("tbhd,h->tbhd", x, self.c_attn)
+            x = x.reshape(tgt_len, bsz, self.embed_dim)
+        if self.attn_ln is not None:
+            x = self.attn_ln(x)
+        x = self.dropout_module(x)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.self_attn_layer_norm(x)
+
+        if self.encoder_attn is not None and encoder_out is not None:
+            residual = x
+            if self.normalize_before:
+                x = self.encoder_attn_layer_norm(x)
+            if prev_attn_state is not None:
+                prev_key, prev_value = prev_attn_state[:2]
+                saved_state: Dict[str, Optional[Tensor]] = {
+                    "prev_key": prev_key,
+                    "prev_value": prev_value,
+                }
+                if len(prev_attn_state) >= 3:
+                    saved_state["prev_key_padding_mask"] = prev_attn_state[2]
+                assert incremental_state is not None
+                self.encoder_attn._set_input_buffer(incremental_state, saved_state)
+
+            assert x.size() == encoder_out.size()  # same length as target
+            x, attn = self.encoder_attn(
+                query=x,
+                key=encoder_out,
+                value=encoder_out,
+                key_padding_mask=encoder_padding_mask,
+                incremental_state=incremental_state,
+                static_kv=False,  # to false
+                need_weights=need_attn or (not self.training and self.need_attn),
+                need_head_weights=need_head_weights,
+                attn_mask=self_attn_mask,  # future mask
+            )
+            x = self.dropout_module(x)
+            x = self.residual_connection(x, residual)
+            if not self.normalize_before:
+                x = self.encoder_attn_layer_norm(x)
+
+        residual = x
+        if self.normalize_before:
+            x = self.final_layer_norm(x)
+
+        x = self.activation_fn(self.fc1(x))
+        x = self.activation_dropout_module(x)
+        if self.ffn_layernorm is not None:
+            x = self.ffn_layernorm(x)
+        x = self.fc2(x)
+        x = self.dropout_module(x)
+        if self.w_resid is not None:
+            residual = torch.mul(self.w_resid, residual)
+        x = self.residual_connection(x, residual)
+        if not self.normalize_before:
+            x = self.final_layer_norm(x)
+        if self.onnx_trace and incremental_state is not None:
+            saved_state = self.self_attn._get_input_buffer(incremental_state)
+            assert saved_state is not None
+            if self_attn_padding_mask is not None:
+                self_attn_state = [
+                    saved_state["prev_key"],
+                    saved_state["prev_value"],
+                    saved_state["prev_key_padding_mask"],
+                ]
+            else:
+                self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
+            return x, attn, self_attn_state
+        return x, attn, None
 
 
 class CIFDecoder(TransformerDecoder):
@@ -422,8 +578,9 @@ class CIFDecoder(TransformerDecoder):
                 cif.size()[1] == bs
             ), f"Expected cif.shape == (t, {bs}, c) got {cif.shape}"
             cif_lengths = encoder_out["cif_lengths"][0]
-        if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
-            padding_mask = encoder_out["encoder_padding_mask"][0]
+            padding_mask = lengths_to_padding_mask(cif_lengths)
+        # if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
+        #     padding_mask = encoder_out["encoder_padding_mask"][0]
 
         # embed positions
         positions = None
@@ -442,6 +599,7 @@ class CIFDecoder(TransformerDecoder):
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
+            padding_mask = None
 
         # embed tokens and positions
         x = self.embed_tokens(prev_output_tokens) * self.embed_scale
@@ -541,5 +699,6 @@ def cif_transformer(args):
     args.cif_sg_alpha = getattr(args, "cif_sg_alpha", False)
     args.cif_conv_kernel = getattr(args, "cif_conv_kernel", 3)
     args.cif_highway = getattr(args, "cif_highway", False)
+    args.cif_infinite_lookback = getattr(args, "cif_infinite_lookback", False)
     args.ctc_layer = True
     s2t_emformer_s(args)
