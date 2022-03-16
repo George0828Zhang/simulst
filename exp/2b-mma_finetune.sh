@@ -38,7 +38,7 @@ if [[ ${MODEL} == "infinite_lookback" ]]; then
 else
     LATAVG=0.0
 fi
-TASK=mma_${TGT}_${MODEL}_${LAT//./_}
+TASK=mma_${TGT}_${MODEL}_${LATVAR//./_}
 . ./data_path.sh
 MMA_CHECK=checkpoints/mma_${TGT}_${MODEL}_0_0/avg_best_5_checkpoint.pt
 
