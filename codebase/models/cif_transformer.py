@@ -475,7 +475,6 @@ class CIFDecoderLayer(TransformerDecoderLayer):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            assert x.size() == encoder_out.size()  # same length as target
             x, attn = self.encoder_attn(
                 query=x,
                 key=encoder_out,
@@ -538,6 +537,7 @@ class CIFDecoder(TransformerDecoder):
             output_projection=output_projection
         )
         self.highway = args.cif_highway
+        self.infinite_lookback = args.cif_infinite_lookback
 
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return CIFDecoderLayer(args, no_encoder_attn)
@@ -579,6 +579,11 @@ class CIFDecoder(TransformerDecoder):
             ), f"Expected cif.shape == (t, {bs}, c) got {cif.shape}"
             cif_lengths = encoder_out["cif_lengths"][0]
             padding_mask = lengths_to_padding_mask(cif_lengths)
+            if cif.size(0) > padding_mask.size(1):
+                padding_mask = torch.cat([
+                    padding_mask,
+                    padding_mask.new_ones(bs, cif.size(0) - padding_mask.size(1))], dim=1)
+
         # if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
         #     padding_mask = encoder_out["encoder_padding_mask"][0]
 
@@ -591,15 +596,19 @@ class CIFDecoder(TransformerDecoder):
 
         if incremental_state is not None:
             _T = prev_output_tokens.size(1)
-            cif_index = cif_lengths.clip(max=_T) - 1
-            cif = cif.gather(
-                0,
-                cif_index.view(1, bs, 1).expand(-1, -1, cif.size(-1))
-            )
+            if self.infinite_lookback:
+                cif = cif[:_T]
+                padding_mask = padding_mask[:, :_T]
+            else:
+                cif_index = cif_lengths.clip(max=_T) - 1
+                cif = cif.gather(
+                    0,
+                    cif_index.view(1, bs, 1).expand(-1, -1, cif.size(-1))
+                )
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
-            padding_mask = None
+            # padding_mask = None
 
         # embed tokens and positions
         x = self.embed_tokens(prev_output_tokens) * self.embed_scale
