@@ -11,12 +11,7 @@ while [[ $# -gt 0 ]]; do
       shift # past value
       ;;
     -l|--latency)
-      LAT="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    -c|--ctc)
-      CTC="$2"
+      LATVAR="$2"
       shift # past argument
       shift # past value
       ;;
@@ -37,8 +32,13 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 # defaults
 export TGT=${TGT:-de}
 MODEL=${MODEL:-infinite_lookback}
-LAT=${LAT:-0.0}
-TASK=mma_${TGT}_${MODEL}_${LAT//./_}
+LATVAR=${LATVAR:-0.0}
+if [[ ${MODEL} == "infinite_lookback" ]]; then
+    LATAVG=${LATVAR}
+else
+    LATAVG=0.0
+fi
+TASK=mma_${TGT}_${MODEL}_${LATVAR//./_}
 . ./data_path.sh
 MMA_CHECK=checkpoints/mma_${TGT}_${MODEL}_0_0/avg_best_5_checkpoint.pt
 
@@ -57,7 +57,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --fixed-pre-decision-ratio 8 --mass-preservation \
     --dropout 0.3 --activation-dropout 0.1 --attention-dropout 0.1 \
     --criterion mma_criterion --label-smoothing 0.1 \
-    --latency-avg-weight ${LAT} --latency-var-weight ${LAT} \
+    --latency-avg-weight ${LATAVG} --latency-var-weight ${LATVAR} \
     --clip-norm 10 --weight-decay 1e-6 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --lr 1e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 4000 --warmup-init-lr 1e-7 \
