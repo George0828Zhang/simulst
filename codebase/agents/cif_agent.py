@@ -134,6 +134,8 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--full-sentence", default=False, action="store_true",
                             help="use full sentence strategy, "
                             "by updating the encoder only once after read is finished.")
+        parser.add_argument("--cif-beta", type=float, default=1.0)
+        parser.add_argument("--overshoot-weight", type=float, default=1.0)
         # fmt: on
         return parser
 
@@ -168,6 +170,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         self.max_len = lambda x: args.max_len_a * x + args.max_len_b
 
         self.force_finish = args.force_finish
+        self.overshoot_weight = args.overshoot_weight
 
         torch.set_grad_enabled(False)
         torch.set_num_threads(self.workers)
@@ -205,10 +208,14 @@ class FairseqSimulSTAgent(SpeechAgent):
         # build model for ensemble
         state["cfg"]["model"].load_pretrained_encoder_from = None
         state["cfg"]["model"].load_pretrained_decoder_from = None
+        state["cfg"]["model"].cif_beta = args.cif_beta
+
         self.model = task.build_model(state["cfg"]["model"])
         self.model.load_state_dict(state["model"], strict=True)
         self.model.eval()
         self.model.share_memory()
+        # update beta and tail thres
+        logger.info(f"cif beta: {self.model.encoder.cif_layer.beta}")
 
         if self.gpu:
             self.model.cuda()
@@ -395,7 +402,7 @@ class FairseqSimulSTAgent(SpeechAgent):
                 prev_output_tokens=tgt_indices,
                 encoder_out=states.encoder_states,
                 incremental_state=states.dec_incremental_states,
-                overshoot_weight=1.0,
+                overshoot_weight=self.overshoot_weight,
             )
 
             states.decoder_out = x
@@ -424,7 +431,7 @@ class FairseqSimulSTAgent(SpeechAgent):
         ):
             # If we want to force finish the translation
             # (don't stop before finish reading), return a None
-            # self.model.decoder.clear_cache(states.incremental_states)
+            self.model.decoder.clear_cache(states.dec_incremental_states)
             index = None
 
         return index

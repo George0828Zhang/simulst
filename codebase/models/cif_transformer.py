@@ -372,6 +372,23 @@ class CIFDecoderLayer(TransformerDecoderLayer):
             kdim=args.encoder_embed_dim
         )
 
+    def prune_incremental_state(
+        self,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
+    ):
+        input_buffer = self.self_attn._get_input_buffer(incremental_state)
+        for key in ["prev_key", "prev_value"]:
+            input_buffer_key = input_buffer[key]
+            assert input_buffer_key is not None
+            if input_buffer_key.size(2) > 1:
+                input_buffer[key] = input_buffer_key[:, :, :-1, :]
+            else:
+                typed_empty_dict: Dict[str, Optional[Tensor]] = {}
+                input_buffer = typed_empty_dict
+                break
+        assert incremental_state is not None
+        self.self_attn._set_input_buffer(incremental_state, input_buffer)
+
     def forward(
         self,
         x,
@@ -542,6 +559,24 @@ class CIFDecoder(TransformerDecoder):
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return CIFDecoderLayer(args, no_encoder_attn)
 
+    def clear_cache(
+        self,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]],
+        end_id: Optional[int] = None,
+    ):
+        """
+        Clean cache in the monotonic layers.
+        The cache is generated because of a forward pass of decoder has run but no prediction,
+        so that the self attention key value in decoder is written in the incremental state.
+        end_id is the last idx of the layers
+        """
+        if end_id is None:
+            end_id = len(self.layers)
+
+        for index, layer in enumerate(self.layers):
+            if index < end_id:
+                layer.prune_incremental_state(incremental_state)
+
     def extract_features_scriptable(
         self,
         prev_output_tokens,
@@ -596,19 +631,17 @@ class CIFDecoder(TransformerDecoder):
 
         if incremental_state is not None:
             _T = prev_output_tokens.size(1)
-            if self.infinite_lookback:
-                cif = cif[:_T]
-                padding_mask = padding_mask[:, :_T]
-            else:
-                cif_index = cif_lengths.clip(max=_T) - 1
-                cif = cif.gather(
-                    0,
-                    cif_index.view(1, bs, 1).expand(-1, -1, cif.size(-1))
-                )
+            cif_index = cif_lengths.clip(max=_T) - 1
+            cif = cif.gather(
+                0,
+                cif_index.view(1, bs, 1).expand(-1, -1, cif.size(-1))
+            )
+            # 1. encoder_attn will cache previous key & values, so only need last
+            # 2. since only valid states are gathered, no padding_mask needed
+            padding_mask = None
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
-            # padding_mask = None
 
         # embed tokens and positions
         x = self.embed_tokens(prev_output_tokens) * self.embed_scale
