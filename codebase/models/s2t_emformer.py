@@ -281,13 +281,17 @@ class S2TEmformerEncoder(FairseqEncoder):
         """
         1. ignores ctc projection if not needed
         """
-        if not self.args.ctc_layer:
+        if self.args.ctc_layer:
+            new_state_dict = state_dict
+        else:
+            new_state_dict = {}
             for w in state_dict.keys():
                 if re.search(r"ctc_layer\..*", w) is not None:
                     logger.warning("Discarding CTC projection weights! Make sure this is intended...")
-                    del state_dict[w]
+                else:
+                    new_state_dict[w] = state_dict[w]
 
-        return super().load_state_dict(state_dict, strict=strict)
+        return super().load_state_dict(new_state_dict, strict=strict)
 
 
 @register_model("s2t_emformer")
