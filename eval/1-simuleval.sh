@@ -15,23 +15,13 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -k|--waitk)
-      WAITK="$2"
-      shift # past argument
-      shift # past value
-      ;;
     -e|--expdir)
       EXP="$2"
       shift # past argument
       shift # past value
       ;;
-    -sf|--source-file)
-      SRC_FILE="$2"
-      shift # past argument
-      shift # past value
-      ;;
-    -tf|--target-file)
-      TGT_FILE="$2"
+    -s|--split)
+      SPLIT="$2"
       shift # past argument
       shift # past value
       ;;
@@ -53,8 +43,9 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 export TGT=${TGT:-de}
 AGENT=${AGENT:-"../codebase/agents/default_agent.py"}
 EXP=${EXP:-"../exp"}
-SRC_FILE=${SRC_FILE:-"./data_de/dev.wav_list"}
-TGT_FILE=${TGT_FILE:-"./data_de/dev.de"}
+SPLIT=${SPLIT:-dev}
+SRC_FILE="./data_${TGT}/${SPLIT}.wav_list"
+TGT_FILE="./data_${TGT}/${SPLIT}.${TGT}"
 
 source ${EXP}/data_path.sh
 
@@ -70,7 +61,7 @@ WORKERS=2
 BLEU_TOK=13a
 UNIT=word
 DATANAME=$(basename $(dirname ${DATA}))
-OUTPUT=${DATANAME}_${TGT}-results/${MODEL}
+OUTPUT=${DATANAME}_${TGT}_${SPLIT}-results/${MODEL}
 mkdir -p ${OUTPUT}
 
 if [[ ${TGT} == "zh" ]]; then
