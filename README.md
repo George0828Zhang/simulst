@@ -1,4 +1,17 @@
 # Simultaneous Speech Translation
+Code base for simultaneous speech translation experiments.
+
+## Implemented
+### Encoder
+- [Transformers with convolutional context for ASR](https://arxiv.org/abs/1904.11660)
+- [Emformer](https://arxiv.org/abs/2010.10759)
+
+### Streaming Models
+- [Monotonic Multihead Attention](https://arxiv.org/abs/1909.12406) [[example](docs/mma.md)]
+- [Continuous Integrate-and-Fire](https://arxiv.org/abs/1905.11235) [[example](docs/cif.md)]
+- [Segment to Segment Neural Transducer](https://arxiv.org/abs/1609.08194) [WIP]
+- [RNN Transducer](https://arxiv.org/abs/1211.3711) [WIP]
+
 
 ## Setup
 
@@ -20,105 +33,28 @@ pip install -r requirements.txt
 git submodule update --init --recursive
 ```
 
-## Data Preparation
-This section introduces the data preparation for training and evaluation. Following will be based on MuST-C En-De.
-
-1. [Download](https://ict.fbk.eu/must-c/) and unpack the package.
-```bash
-cd ${DATA_ROOT}
-tar -zxvf MUSTC_v2.0_en-de.tar.gz
-```
-2. Inside `DATA/get_mustc.sh`, cnfigure the correct paths:
-```bash
-# the path where the data is unpacked.
-DATA_ROOT=/livingrooms/george/mustc
-FAIRSEQ=~/utility/fairseq
-# IF NEEDED, activate your python environments
-source ~/envs/apex/bin/activate
-```
-3. Preprocess data with
-```bash
-cd DATA
-bash mustc/get_mustc.sh
-```
-The fbank and manifest files should appear under `${DATA_ROOT}/en-de/`.
-
-4. Inside `DATA/get_data_mt.sh`, cnfigure the correct paths:
-```bash
-# the path where the data is unpacked.
-DATA_ROOT=/livingrooms/george/mustc
-FAIRSEQ=~/utility/fairseq
-# IF NEEDED, activate your python environments
-source ~/envs/apex/bin/activate
-```
-5. Preprocess data for MT with
-```bash
-cd DATA
-bash mustc/get_data_mt.sh
-```
-The files should appear under `${DATA_ROOT}/en-de/mt/`.
-
-5. Configure environment and path in `exp/data_path.sh` before training:
-```bash
-export SRC=en
-export TGT=de
-export DATA_ROOT=/livingrooms/george/mustc
-export DATA=${DATA_ROOT}/${SRC}-${TGT}
-
-FAIRSEQ=~/utility/fairseq
-USERDIR=`realpath ../codebase`
-export PYTHONPATH="$FAIRSEQ:$PYTHONPATH"
-
-# IF NEEDED, activate your python environments
-source ~/envs/apex/bin/activate
-```
-
-6. (Optional) To migrate data to a new system, change paths in `scripts/migrate_data_path.sh`:
-```bash
-ROOT=/media/george/Data/mustc/en-de  # new data path
-from=/livingrooms/george/mustc/en-de  # old data path
-to=${ROOT}
-```
-Then run
-```bash
-bash scripts/migrate_data_path.sh
-```
-
-## ASR Pre-training
-First pre-train the ASR using joint CTC ASR
-```bash
-cd exp
-bash 1a-pretrain_asr.sh
-```
-Run average checkpoint and evaluation
-```bash
-cd eval
-bash eval_asr.sh
-```
-
-### Pre-trained model
-|MuST-C|en-de(v2)|en-es|
+## Pre-trained model
+ASR model with Emformer encoder and Transformer decoder. Pre-trained with joint CTC cross-entropy loss.
+|MuST-C (WER)|en-de (V2)|en-es|
 |-|-|-|
 |dev|9.65|14.44|
+|tst-COMMON|12.85|14.02|
 |model|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EUc3OWHv2TdDrvsj7UuUzKUBLFw0bxngdSid__81w-SYcw?e=KHg2lD)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EVSSLkjzASVKjqEEt5NQ3oQBYhcxbT9IU1Ah0vlAuSPXww?e=grgf24)|
 |vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
 
-<!-- 
-## MT (Seq-KD)
-Train MT mode 
-```bash
-cd exp
-bash 0-mt.sh
-```
-Run average checkpoint and evaluation
-```bash
-cd eval
-bash eval_mt.sh
-```
-
-### Pre-trained model
-|MuST-C|en-de(v2)|en-es|
+## Sequence-level Knowledge Distillation
+|MuST-C (BLEU)|en-de (V2)|en-es|
 |-|-|-|
 |valid|31.76|39.86|
-|model|[download]()|[download]()|
-|vocab|shared w/ ST|shared w/ ST| -->
+|model|?|?|
+|distillation|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ER_LUQWRWatIlQkPzQh8eG0BZPOkcKoZXqPBKhxMLRuJdQ?e=iyP2NT)|?|
+|vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
+
+
+## Reference
+- https://github.com/pytorch/fairseq
+
+## Citation
+Please consider citing our paper:
+```bibtex
+```

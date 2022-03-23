@@ -7,7 +7,6 @@ from typing import Optional, Dict, List
 from torch import Tensor
 from pathlib import Path
 from fairseq import checkpoint_utils
-from fairseq.data.data_utils import lengths_to_padding_mask
 from fairseq.models import (
     register_model,
     register_model_architecture
@@ -606,21 +605,12 @@ class CIFDecoder(TransformerDecoder):
 
         cif: Optional[Tensor] = None
         cif_lengths: Optional[Tensor] = None
-        padding_mask: Optional[Tensor] = None
         if encoder_out is not None and len(encoder_out["cif_out"]) > 0:
             cif = encoder_out["cif_out"][0]
             assert (
                 cif.size()[1] == bs
             ), f"Expected cif.shape == (t, {bs}, c) got {cif.shape}"
             cif_lengths = encoder_out["cif_lengths"][0]
-            padding_mask = lengths_to_padding_mask(cif_lengths)
-            if cif.size(0) > padding_mask.size(1):
-                padding_mask = torch.cat([
-                    padding_mask,
-                    padding_mask.new_ones(bs, cif.size(0) - padding_mask.size(1))], dim=1)
-
-        # if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
-        #     padding_mask = encoder_out["encoder_padding_mask"][0]
 
         # embed positions
         positions = None
@@ -638,7 +628,6 @@ class CIFDecoder(TransformerDecoder):
             )
             # 1. encoder_attn will cache previous key & values, so only need last
             # 2. since only valid states are gathered, no padding_mask needed
-            padding_mask = None
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
@@ -678,7 +667,7 @@ class CIFDecoder(TransformerDecoder):
             x, layer_attn, _ = layer(
                 x,
                 cif,  # enc,
-                padding_mask,
+                self_attn_padding_mask,
                 incremental_state,
                 self_attn_mask=self_attn_mask,
                 self_attn_padding_mask=self_attn_padding_mask,
