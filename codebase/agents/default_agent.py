@@ -7,6 +7,11 @@ from fairseq.data.audio.audio_utils import (
     _get_kaldi_fbank, _get_torchaudio_fbank
 )
 logger = logging.getLogger(__name__)
+try:
+    from kaldi.feat import fbank
+    logger.info(f"using kaldi fbank: {fbank.__file__}")
+except ImportError:
+    logger.info("using torchaudio fbank.")
 
 from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
 from simuleval.agents import SpeechAgent

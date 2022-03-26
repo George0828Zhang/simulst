@@ -6,14 +6,18 @@ import logging
 module_path = Path(__file__).parent
 build_path = module_path / "build"
 build_path.mkdir(exist_ok=True)
-extension = torch.utils.cpp_extension.load(
-    "best_alignment_fn",
-    sources=[
-        module_path / "best_alignment.cpp",
-        module_path / "best_alignment.cu",
-    ],
-    build_directory=build_path.as_posix()
-)
+try:
+    extension = torch.utils.cpp_extension.load(
+        "best_alignment_fn",
+        sources=[
+            module_path / "best_alignment.cpp",
+            module_path / "best_alignment.cu",
+        ],
+        build_directory=build_path.as_posix()
+    )
+except OSError:
+    # best_alignment is only for cuda. If using torch-cpu, then ignore this.
+    pass
 
 logger = logging.getLogger(__name__)
 

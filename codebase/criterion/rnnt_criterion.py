@@ -15,7 +15,6 @@ from fairseq.criterions.label_smoothed_cross_entropy import (
     LabelSmoothedCrossEntropyCriterion
 )
 import logging
-from warp_rnnt import rnnt_loss
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +80,10 @@ class RNNTCriterion(LabelSmoothedCrossEntropyCriterion):
         return loss, sample_size, logging_output
 
     def compute_rnnt_loss(self, model, net_output, sample, reduce=True):
+        try:
+            from warp_rnnt import rnnt_loss
+        except ImportError:
+            raise ImportError("Please install warp_rnnt: pip install warp-rnnt")
         """
         B x S x T x V
         """

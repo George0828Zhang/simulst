@@ -11,5 +11,3 @@ tensorboard
 tensorboardX
 asr-evaluation
 bitarray
-warp_rnnt
-simuleval

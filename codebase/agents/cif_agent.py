@@ -11,9 +11,7 @@ try:
     from kaldi.feat import fbank
     logger.info(f"using kaldi fbank: {fbank.__file__}")
 except ImportError:
-    # logger.info("using torchaudio fbank.")
-    from kaldi.feat import fbank
-    logger.info(f"using kaldi fbank: {fbank.__file__}")
+    logger.info("using torchaudio fbank.")
 
 from simuleval import READ_ACTION, WRITE_ACTION, DEFAULT_EOS
 from simuleval.agents import SpeechAgent
