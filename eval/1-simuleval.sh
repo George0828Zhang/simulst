@@ -30,6 +30,11 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
+    -p|--port)
+      PORT="$2"
+      shift # past argument
+      shift # past value
+      ;;
     *)    # unknown option
       POSITIONAL+=("$1") # save it in an array for later
       shift # past argument
@@ -41,6 +46,7 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
 export TGT=${TGT:-de}
+PORT=${PORT:-12345}
 AGENT=${AGENT:-"../codebase/agents/default_agent.py"}
 EXP=${EXP:-"../exp"}
 SPLIT=${SPLIT:-dev}
@@ -56,8 +62,7 @@ if [ ! -f ${CHECKPOINT} ]; then
 fi
 SPM_PREFIX=${DATA}/spm_unigram4096_st
 
-PORT=12345
-WORKERS=2
+WORKERS=1
 BLEU_TOK=13a
 UNIT=word
 DATANAME=$(basename $(dirname ${DATA}))
@@ -69,6 +74,12 @@ if [[ ${TGT} == "zh" ]]; then
     UNIT=char
     NO_SPACE="--no-space"
 fi
+
+export OMP_NUM_THREADS=${WORKERS}
+export OPENBLAS_NUM_THREADS=${WORKERS}
+export MKL_NUM_THREADS=${WORKERS}
+export NUMEXPR_NUM_THREADS=${WORKERS}
+export VECLIB_MAXIMUM_THREADS=${WORKERS}
 
 script=$(which simuleval)
 python ${script} \
