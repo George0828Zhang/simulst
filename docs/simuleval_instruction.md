@@ -28,6 +28,9 @@ Translation_1
 Translation_2
 ```
 
+## Long Utterances
+The argument `--thresholds 20,40,60` in `0-gen_simul_list.sh` will create additional split that are called `${SPLIT}_20s`, `${SPLIT}_40s` and `${SPLIT}_60s`. These are the long utterance set that have the same content as `${SPLIT}`, but with longer, concatenated segmentation as described in paper.
+
 ## Run evaluation
 ```
 cd eval
@@ -42,5 +45,5 @@ bash 1-simuleval.sh \
 - ${AGENT}: the agent used to evaluate the model.
 - ${EXP}: the experiments directory containing `checkpoints/`.
 - ${MODEL}: the name of the the model (under `exp/checkpoints/`).
-- ${SPLIP}: the `dev`, `tst-COMMON` or `tst-HE`.
+- \${SPLIT}: the `dev`, `tst-COMMON` or `tst-HE`. (or long utterance sets `${SPLIT}_20s`)
 - ${TGT}: the target language `de`, `es`.

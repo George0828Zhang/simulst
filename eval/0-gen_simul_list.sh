@@ -10,4 +10,5 @@ echo "segmenting ${SPLIT} data"
 python -m mustc.seg_mustc_data \
   --data-root ${MUSTC_ROOT} --lang ${TGT} \
   --split ${SPLIT} \
+  --thresholds 20,40,60 \
   --output ${EVAL_DATA}

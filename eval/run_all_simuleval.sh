@@ -2,6 +2,9 @@ export TGT=de
 SPLIT=(
     dev
     tst-COMMON
+    tst-COMMON_20s
+    tst-COMMON_40s
+    tst-COMMON_60s
 )
 CIFS=(
     cif_${TGT}_align_ctc0_3_lat0_0
