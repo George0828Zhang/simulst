@@ -7,6 +7,7 @@
 import math
 
 import torch
+torch.autograd.set_detect_anomaly(True)
 from torch import Tensor
 import torch.nn as nn
 
@@ -281,7 +282,8 @@ class MonotonicAttention(MultiheadAttention):
             soft_energy = self.energy_from_qk(
                 query,
                 key,
-                "soft"
+                "soft",
+                key_padding_mask=key_padding_mask,
             )
             beta = torch.nn.functional.softmax(
                 soft_energy.masked_fill(
@@ -500,9 +502,29 @@ class WaitKAttention(
         self.k_in_proj["soft"] = self.k_in_proj["monotonic"]
 
         self.waitk_lagging = args.waitk_lagging
+        self.waitk_testtime = args.waitk_lagging
+        if hasattr(args, "waitk_testtime"):
+            self.waitk_testtime = args.waitk_testtime
         assert self.waitk_lagging > 0, (
             f"Lagging has to been larger than 0, get {self.waitk_lagging}."
         )
+        assert self.waitk_testtime > 0, (
+            f"Lagging has to been larger than 0, get {self.waitk_testtime}."
+        )
+
+    def set_waitk_lagging(self, k):
+        if self.training:
+            self.waitk_lagging = k
+        else:
+            self.waitk_testtime = k
+
+    def upgrade_state_dict_named(self, state_dict, name):
+        """
+        for waitk models, *proj_soft and *proj are exactly the same.
+        """
+        for pre in ("q", "k"):
+            for m in ("weight", "bias"):
+                state_dict[f"{name}.{pre}_proj_soft.{m}"] = state_dict[f"{name}.{pre}_proj.{m}"]
 
     @staticmethod
     def add_args(parser):
@@ -513,6 +535,9 @@ class WaitKAttention(
 
         parser.add_argument(
             "--waitk-lagging", type=int, required=True, help="Wait K lagging"
+        )
+        parser.add_argument(
+            "--waitk-testtime", type=int, help="Wait K lagging at inference. Default is train k."
         )
 
     def p_choose_from_qk(
@@ -539,7 +564,7 @@ class WaitKAttention(
             tgt_len=tgt_len,
             src_len=key.size(0),
             bsz=query.size(1) * self.num_heads,
-            waitk_lagging=self.waitk_lagging,
+            waitk_lagging=self.waitk_lagging if self.training else self.waitk_testtime,
             key_padding_mask=key_padding_mask,
             incremental_state=incremental_state,
         )

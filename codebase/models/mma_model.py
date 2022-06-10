@@ -53,6 +53,18 @@ class MMADecoder(TransformerDecoder):
     def __init__(self, args, dictionary, embed_tokens, output_projection=None):
         super().__init__(args, dictionary, embed_tokens, False, output_projection)
 
+    def get_waitk_lagging(self):
+        ks = [layer.encoder_attn.waitk_lagging for layer in self.layers]
+        if any([k != ks[0] for k in ks]):
+            return ks
+        else:
+            return ks[0]
+
+    def set_waitk_lagging(self, k):
+        k = min(int(k), self.args.max_source_positions)
+        for layer in self.layers:
+            layer.encoder_attn.set_waitk_lagging(k)
+
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return MMADecoderLayer(args, no_encoder_attn)
 
@@ -230,6 +242,13 @@ class MMAModel(S2TEmformerModel):
             )
         return decoder
 
+    def get_waitk_lagging(self):
+        return self.decoder.get_waitk_lagging()
+
+    def set_waitk_lagging(self, k):
+        k = min(int(k), self.args.max_source_positions)
+        self.decoder.set_waitk_lagging(k)
+
 
 @register_model_architecture(
     "mma_model", "mma_model_s"
@@ -239,4 +258,6 @@ def ssnt_model_s(args):
     args.noise_mean = getattr(args, "noise_mean", 0.0)
     args.energy_bias_init = getattr(args, "energy_bias_init", -2.0)
     args.attention_eps = getattr(args, "attention_eps", 1e-6)
+    args.mass_preservation = getattr(args, "mass_preservation", False)
+    args.energy_bias = getattr(args, "energy_bias", False)
     s2t_emformer_s(args)
