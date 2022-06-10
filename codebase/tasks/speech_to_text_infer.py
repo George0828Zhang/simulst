@@ -7,7 +7,7 @@ import logging
 import torch
 import numpy as np
 from fairseq import metrics, utils
-from fairseq.tasks import register_task, LegacyFairseqTask
+from fairseq.tasks import register_task
 from fairseq.logging.meters import safe_round
 
 from fairseq.scoring.bleu import SacrebleuScorer
@@ -17,7 +17,6 @@ from examples.speech_text_joint_to_text.tasks.speech_text_joint import SpeechTex
 logger = logging.getLogger(__name__)
 
 from .inference_config import InferenceConfig
-from .waitk_sequence_generator import WaitkSequenceGenerator
 EVAL_BLEU_ORDER = 4
 
 
@@ -84,35 +83,6 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
                 self.inference_cfg.generation_args,
             )
         return model
-
-    def build_generator(
-        self,
-        models,
-        args,
-        seq_gen_cls=None,
-        extra_gen_cls_kwargs=None,
-    ):
-        """ speech_to_text ignores seq_gen_cls and overrides
-        extra_gen_cls_kwargs. So we will call LegacyFairseqTask's
-        method. """
-        waitk = getattr(models[0], "waitk", None)
-        test_waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
-        if test_waitk is not None and test_waitk != waitk:
-            # test override.
-            logger.warning(f"Train test mismatch: training wait-{waitk}, while testing wait-{test_waitk}.")
-            waitk = test_waitk
-        stride = 1
-        if waitk is not None:
-            stride = getattr(models[0], "waitk_stride", 1)
-            seq_gen_cls = WaitkSequenceGenerator
-            extra = {"waitk": waitk, "waitk_stride": stride}
-            if extra_gen_cls_kwargs:
-                extra_gen_cls_kwargs.update(extra)
-            else:
-                extra_gen_cls_kwargs = extra
-        return LegacyFairseqTask.build_generator(
-            self, models, args, seq_gen_cls=seq_gen_cls, extra_gen_cls_kwargs=extra_gen_cls_kwargs
-        )
 
     def process_sample(self, sample):
         """

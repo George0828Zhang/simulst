@@ -16,4 +16,5 @@ def transformer_small(args):
     args.decoder_attention_heads = getattr(args, "decoder_attention_heads", 4)
     args.decoder_layers = getattr(args, "decoder_layers", 6)
     args.decoder_normalize_before = getattr(args, "decoder_normalize_before", True)
+    args.left_pad_source = False
     base_architecture(args)

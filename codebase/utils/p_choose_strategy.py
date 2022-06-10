@@ -11,17 +11,6 @@ def waitk_p_choose(
     key_padding_mask: Optional[Tensor] = None,
     incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None
 ):
-
-    max_src_len = src_len
-    max_tgt_len = tgt_len
-
-    if max_src_len < waitk_lagging:
-        if incremental_state is not None:
-            max_tgt_len = 1
-        return torch.zeros(
-            bsz, max_tgt_len, max_src_len
-        )
-
     # Assuming the p_choose looks like this for wait k=3
     # src_len = 6, max_tgt_len = 5
     #   [0, 0, 1, 0, 0, 0, 0]
@@ -30,16 +19,31 @@ def waitk_p_choose(
     #   [0, 0, 0, 0, 0, 1, 0]
     #   [0, 0, 0, 0, 0, 0, 1]
 
-    p_choose = (
-        torch.ones(max_tgt_len, max_src_len)
-        .triu(waitk_lagging - 1)
-        .tril(waitk_lagging - 1)
-        .unsqueeze(0)
-        .repeat_interleave(bsz, 0)
-    )
     if key_padding_mask is not None:
-        p_choose = p_choose.to(key_padding_mask)
-        p_choose = p_choose.masked_fill(key_padding_mask.unsqueeze(1), 0)
+        key_eos = (~key_padding_mask).long().sum(-1) - 1  # a (B,) tensor indicating eos
+    else:
+        key_eos = torch.full((bsz,), src_len - 1)
+
+    # for each (B, T), find a index following waitk and <= eos
+    monotonic_step = (
+        torch.arange(tgt_len, device=key_eos.device)
+        .add(waitk_lagging - 1)
+        .unsqueeze(0)
+        .expand(bsz, -1)
+        .clone()
+    )
+    monotonic_step = monotonic_step.clip(
+        max=key_eos.unsqueeze(1).expand(-1, tgt_len)
+    )
+
+    p_choose = (
+        torch.arange(src_len, device=key_eos.device)
+        .unsqueeze(0)
+        .unsqueeze(1)
+        .expand(bsz, tgt_len, -1)
+    ) == monotonic_step.unsqueeze(2)
+
+    # assert p_choose.sum(-1).eq(1).all(), f"{p_choose.sum(-1)}"
 
     if incremental_state is not None:
         p_choose = p_choose[:, -1:]
