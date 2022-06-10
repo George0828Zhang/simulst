@@ -18,6 +18,7 @@ from fairseq.criterions.label_smoothed_cross_entropy import (
 from simuleval.metrics.latency import DifferentiableAverageLagging
 from codebase.criterion.best_alignment import best_alignment
 import logging
+from omegaconf import II
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class CIFCriterionConfig(LabelSmoothedCrossEntropyCriterionConfig):
         default=10,
         metadata={"help": "The milliseconds per frame shift used to compute the delay."},
     )
+    cif_beta: Optional[float] = II("model.cif_beta")
 
 
 def clipped_l2_loss(x, y, reduce=True, clip=None):
@@ -89,6 +91,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         self.latency_factor = cfg.latency_factor
         self.ms_per_frame_shift = cfg.ms_per_frame_shift
         self.quant_type = cfg.quant_type
+        self.cif_beta = cfg.cif_beta
 
     def prepare_tensors(self, model, net_output, sample):
         # ctc loss
@@ -124,6 +127,9 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
         # get target mask
         target_padding_mask = (target == self.pad_idx)
 
+        if "target_lengths" not in sample:
+            sample["target_lengths"] = target.ne(self.pad_idx).sum(1)
+
         return {
             "ctc_lprobs": lprobs,
             "alpha": alpha,
@@ -149,7 +155,7 @@ class CIFCriterion(LabelSmoothedCrossEntropyCriterion):
 
         # quant loss
         l_quant, quant_acc = self.compute_quantity_loss(
-            tensors, sample, model.encoder.cif_layer.beta)
+            tensors, sample, self.cif_beta)
 
         # latency loss
         l_latency, latency = self.compute_latency_loss(tensors, sample)

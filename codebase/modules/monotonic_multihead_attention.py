@@ -7,7 +7,6 @@
 import math
 
 import torch
-torch.autograd.set_detect_anomaly(True)
 from torch import Tensor
 import torch.nn as nn
 

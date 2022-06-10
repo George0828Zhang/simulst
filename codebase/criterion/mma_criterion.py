@@ -156,8 +156,8 @@ class MMACriterion(LabelSmoothedCrossEntropyCriterion):
 
         expected_delays = torch.sum(steps * alpha_all, dim=-1)
 
-        target_lengths = sample["target_lengths"]
         target_padding_mask = sample["target"] == self.padding_idx
+        target_lengths = (~target_padding_mask).sum(1)
 
         input_lengths = sample["net_input"]["src_lengths"]
         encoder_padding_mask = net_output[-1]["encoder_padding_mask"]
