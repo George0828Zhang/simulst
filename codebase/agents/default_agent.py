@@ -1,4 +1,5 @@
 import os
+import ast
 import logging
 import numpy as np
 import torch
@@ -111,7 +112,7 @@ class FairseqSimulSTAgent(SpeechAgent):
                             help="Subword splitter model path for target text")
         parser.add_argument("--user-dir", type=str, default="examples/simultaneous_translation",
                             help="User directory for simultaneous translation")
-        parser.add_argument("--max-len-a", type=int, default=1,
+        parser.add_argument("--max-len-a", type=float, default=1,
                             help="Max length of translation ax+b")
         parser.add_argument("--max-len-b", type=int, default=0,
                             help="Max length of translation ax+b")
@@ -132,6 +133,8 @@ class FairseqSimulSTAgent(SpeechAgent):
         parser.add_argument("--full-sentence", default=False, action="store_true",
                             help="use full sentence strategy, "
                             "by updating the encoder only once after read is finished.")
+        parser.add_argument("--model-overrides", type=str, default="{}",
+                            help="a dictionary used to override model args at generation")
         # fmt: on
         return parser
 
@@ -167,7 +170,8 @@ class FairseqSimulSTAgent(SpeechAgent):
 
         self.feature_extractor = OnlineFeatureExtractor(args)
 
-        self.max_len = lambda x: args.max_len_a * x + args.max_len_b
+        self.max_len = lambda x: min(
+            args.max_len_a * x + args.max_len_b, self.model.max_decoder_positions())
 
         self.force_finish = args.force_finish
 
@@ -194,7 +198,11 @@ class FairseqSimulSTAgent(SpeechAgent):
         if not os.path.exists(filename):
             raise IOError("Model file not found: {}".format(filename))
 
-        state = checkpoint_utils.load_checkpoint_to_cpu(filename)
+        overrides = None
+        if hasattr(args, "model_overrides"):
+            overrides = ast.literal_eval(args.model_overrides)
+            logger.info(f"Overrides: {overrides}")
+        state = checkpoint_utils.load_checkpoint_to_cpu(filename, arg_overrides=overrides)
 
         task_args = state["cfg"]["task"]
         task_args.data = args.data_bin

@@ -32,9 +32,11 @@ def waitk_p_choose(
         .expand(bsz, -1)
         .clone()
     )
-    monotonic_step = monotonic_step.clip(
-        max=key_eos.unsqueeze(1).expand(-1, tgt_len)
-    )
+    online = incremental_state.get("online", False)
+    if not online:
+        monotonic_step = monotonic_step.clip(
+            max=key_eos.unsqueeze(1).expand(-1, tgt_len)
+        )
 
     p_choose = (
         torch.arange(src_len, device=key_eos.device)

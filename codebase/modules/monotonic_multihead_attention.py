@@ -511,6 +511,9 @@ class WaitKAttention(
             f"Lagging has to been larger than 0, get {self.waitk_testtime}."
         )
 
+    def get_waitk_lagging(self):
+        return self.waitk_lagging if self.training else self.waitk_testtime
+
     def set_waitk_lagging(self, k):
         if self.training:
             self.waitk_lagging = k
@@ -563,7 +566,7 @@ class WaitKAttention(
             tgt_len=tgt_len,
             src_len=key.size(0),
             bsz=query.size(1) * self.num_heads,
-            waitk_lagging=self.waitk_lagging if self.training else self.waitk_testtime,
+            waitk_lagging=self.get_waitk_lagging(),
             key_padding_mask=key_padding_mask,
             incremental_state=incremental_state,
         )

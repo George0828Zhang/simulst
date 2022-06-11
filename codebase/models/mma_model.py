@@ -54,7 +54,7 @@ class MMADecoder(TransformerDecoder):
         super().__init__(args, dictionary, embed_tokens, False, output_projection)
 
     def get_waitk_lagging(self):
-        ks = [layer.encoder_attn.waitk_lagging for layer in self.layers]
+        ks = [layer.encoder_attn.get_waitk_lagging() for layer in self.layers]
         if any([k != ks[0] for k in ks]):
             return ks
         else:
