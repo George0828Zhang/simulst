@@ -48,6 +48,11 @@ class MMADecoderLayer(TransformerDecoderLayer):
         assert incremental_state is not None
         self.self_attn._set_input_buffer(incremental_state, input_buffer)
 
+        saved_state = self.encoder_attn._get_monotonic_buffer(incremental_state)
+        if "tgt_len" in saved_state:
+            saved_state["tgt_len"] -= 1
+        self.encoder_attn._set_monotonic_buffer(incremental_state, saved_state)
+
 
 class MMADecoder(TransformerDecoder):
     def __init__(self, args, dictionary, embed_tokens, output_projection=None):
