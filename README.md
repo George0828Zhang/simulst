@@ -1,5 +1,5 @@
 # Simultaneous Speech Translation
-Code base for simultaneous speech translation experiments.
+Code base for simultaneous speech translation experiments. It is based on [fairseq](https://github.com/pytorch/fairseq).
 
 ## Implemented
 ### Encoder
@@ -7,10 +7,9 @@ Code base for simultaneous speech translation experiments.
 - [Emformer](https://arxiv.org/abs/2010.10759)
 
 ### Streaming Models
+- [Wait-k](https://aclanthology.org/P19-1289) [[example](docs/waitk.md)]
 - [Monotonic Multihead Attention](https://arxiv.org/abs/1909.12406) [[example](docs/mma.md)]
 - [Continuous Integrate-and-Fire](https://arxiv.org/abs/1905.11235) [[example](docs/cif.md)]
-- [Segment to Segment Neural Transducer](https://arxiv.org/abs/1609.08194) [WIP]
-- [RNN Transducer](https://arxiv.org/abs/1211.3711) [WIP]
 
 
 ## Setup
@@ -43,16 +42,12 @@ ASR model with Emformer encoder and Transformer decoder. Pre-trained with joint 
 |vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
 
 ## Sequence-level Knowledge Distillation
-|MuST-C (BLEU)|en-de (V2)|en-es|
-|-|-|-|
-|valid|31.76|39.86|
-|model|?|?|
-|distillation|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ER_LUQWRWatIlQkPzQh8eG0BZPOkcKoZXqPBKhxMLRuJdQ?e=iyP2NT)|?|
-|vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
+|MuST-C (BLEU)|en-de (V2)|
+|-|-|
+|valid|31.76|
+|distillation|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ER_LUQWRWatIlQkPzQh8eG0BZPOkcKoZXqPBKhxMLRuJdQ?e=iyP2NT)|
+|vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|
 
-
-## Reference
-- https://github.com/pytorch/fairseq
 
 ## Citation
 Please consider citing our paper:

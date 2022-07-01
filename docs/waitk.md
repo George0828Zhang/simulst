@@ -1,6 +1,6 @@
-# Monotonic Multihead Attention with Fixed Pre-decision Module
+# Wait-k with Fixed Pre-decision Module
 
-This is a tutorial of training and evaluating a transformer *MMA* simultaneous model on MUST-C English-Germen Dataset, from [SimulMT to SimulST: Adapting Simultaneous Text Translation to End-to-End Simultaneous Speech Translation](https://www.aclweb.org/anthology/2020.aacl-main.58.pdf).
+This is a tutorial of training and evaluating a transformer *wait-k* simultaneous model on MUST-C English-Germen Dataset, from [SimulMT to SimulST: Adapting Simultaneous Text Translation to End-to-End Simultaneous Speech Translation](https://www.aclweb.org/anthology/2020.aacl-main.58.pdf).
 
 [MuST-C](https://www.aclweb.org/anthology/N19-1202) is multilingual speech-to-text translation corpus with 8-language translations on English TED talks.
 
@@ -19,39 +19,29 @@ ASR model with Emformer encoder and Transformer decoder. Pre-trained with joint 
 |vocab|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/EclKBDoArG9Hv1fM5ii5KooBGUmDu13tTCJe1UYRv74rRA?e=VD7YKv)|[download](https://ntucc365-my.sharepoint.com/:u:/g/personal/r09922057_ntu_edu_tw/ESrix0mt1-BMn3UtWxxptX8BCKdCt1uldrnRhLpZd3Q1bg?e=ayq5ww)|
 
 
-## Monotonic multihead attention with fixed pre-decision module
-The training script for mma is in [exp/2-mma.sh](../exp/2-mma.sh).
+## Wait-k with fixed pre-decision module
+The training script for offline waitk is in [exp/4-offline_waitk.sh](../exp/4-offline_waitk.sh).
 
-To train a MMA-H model with latency weight 0.1, use
+The waitk model will be trained as an offline (wait-1024) model, and tested as a wait-1 model.
 ```bash
-bash 2-mma.sh -t de -m hard_aligned -l 0.1
-```
-
-To train a MMA-IL model with latency weight 0.1, use
-```bash
-bash 2-mma.sh -t de -m infinite_lookback -l 0.1
-```
-
-If you want to finetune from a offline model (latency weight = 0), use
-```bash
-bash 2b-mma_finetune.sh -t de -m infinite_lookback -l 0.1
+bash 4-offline_waitk.sh
 ```
 
 ## Inference & Evaluation
 The evaluation instruction is in [simuleval_instruction.md](simuleval_instruction.md).
-The MMA uses the [default_agent.py](../codebase/agents/default_agent.py).
+The wait-k uses the [default_agent.py](../codebase/agents/default_agent.py).
 ```
 {
     "Quality": {
-        "BLEU": 22.882280993425326
+        "BLEU": 20.258749351223564
     },
     "Latency": {
-        "AL": 1582.635476344213,
-        "AL_CA": 1824.0610745999502,
-        "AP": 0.7660114625870339,
-        "AP_CA": 0.8291859397671248,
-        "DAL": 2127.1755059232137,
-        "DAL_CA": 2391.403942353481
+        "AL": 1782.001343711587,
+        "AL_CA": 1935.7023338036943,
+        "AP": 0.7822591501150944,
+        "AP_CA": 0.8479015672001843,
+        "DAL": 2244.2804247360823,
+        "DAL_CA": 2492.808483191793
     }
 }
 ```
