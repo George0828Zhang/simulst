@@ -52,11 +52,12 @@ ASR model with Emformer encoder and Transformer decoder. Pre-trained with joint 
 ## Citation
 Please consider citing our paper:
 ```bibtex
-@article{chang2022exploring,
-  title={Exploring Continuous Integrate-and-Fire for Adaptive Simultaneous Speech Translation},
-  author={Chang, Chih-Chiang and Lee, Hung-yi},
-  journal={arXiv e-prints},
-  pages={arXiv--2204},
-  year={2022}
+@inproceedings{chang22f_interspeech,
+  author={Chih-Chiang Chang and Hung-yi Lee},
+  title={{Exploring Continuous Integrate-and-Fire for Adaptive Simultaneous Speech Translation}},
+  year=2022,
+  booktitle={Proc. Interspeech 2022},
+  pages={5175--5179},
+  doi={10.21437/Interspeech.2022-10627}
 }
 ```
